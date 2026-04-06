@@ -62,7 +62,7 @@ func New(cfg *config.Config) (*Daemon, error) {
 		manager:     manager,
 		svc:         svc,
 		grpcServer:  server.NewGRPCServer(svc, cfg.Server.GRPCPort),
-		httpServer:  server.NewHTTPServer(svc, cfg.Server.HTTPPort),
+		httpServer:  server.NewHTTPServer(svc, cfg.Server.HTTPPort, cat, cfg),
 		idleTracker: tracker,
 		catalog:     cat,
 	}, nil
