@@ -62,7 +62,7 @@ docker-build:
 # Docker run
 docker-run:
 	docker run -d --name sqnsl \
-		-p 50051:50051 -p 8080:8080 \
+		-p 50051:50051 -p 9147:9147 \
 		-v sqnsl-data:/data \
 		sql-not-so-lite:$(VERSION)
 

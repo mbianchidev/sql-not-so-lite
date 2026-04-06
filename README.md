@@ -9,7 +9,7 @@ Lightweight SQLite-as-a-service daemon. Manages multiple SQLite databases as fil
 ┌──────────┐  gRPC   │    daemon       │───▶│ app_b.sqlite   │
 │  App B   │────────▶│                 │    └────────────────┘
 └──────────┘         │ :50051 (gRPC)   │    ~/.sql-not-so-lite/
-                     │ :8080  (HTTP)   │         databases/
+                     │ :9147  (HTTP)   │         databases/
 ┌──────────┐  HTTP   │                 │
 │  Web GUI │────────▶│                 │    ┌────────────────┐
 └──────────┘         │   ┌──────────┐  │───▶│ catalog.sqlite │
@@ -58,7 +58,7 @@ sqnsl gui          # Opens web GUI in browser
 
 ```bash
 make docker-up     # Start with docker compose
-# GUI at http://localhost:8080
+# GUI at http://localhost:9147
 # gRPC at localhost:50051
 ```
 
@@ -93,7 +93,7 @@ Config file: `~/.sql-not-so-lite/config.toml`
 ```toml
 [server]
 grpc_port = 50051
-http_port = 8080
+http_port = 9147
 data_dir = "~/.sql-not-so-lite/databases"
 
 [idle]
@@ -186,7 +186,7 @@ grpcurl -plaintext -d '{"database":"myapp","sql":"SELECT * FROM users","limit":1
 
 ## Web GUI
 
-Access at `http://localhost:8080` when the daemon is running.
+Access at `http://localhost:9147` when the daemon is running.
 
 - **Sidebar**: Lists all databases with active/idle status
 - **Table Browser**: Click a database → see tables → click to browse rows
@@ -279,7 +279,7 @@ sql-not-so-lite/
 - **Pure Go SQLite** (`modernc.org/sqlite`): No CGO, cross-compiles to single binary
 - **File-per-database**: Each app gets `{name}.sqlite` — readable by any SQLite tool even when the daemon is off
 - **Embedded GUI**: `go:embed` bundles React assets into the binary
-- **Separate ports**: gRPC (:50051) for apps, HTTP (:8080) for GUI + REST
+- **Separate ports**: gRPC (:50051) for apps, HTTP (:9147) for GUI + REST
 
 ## Development
 

@@ -66,7 +66,7 @@ func DefaultConfig() *Config {
 	return &Config{
 		Server: ServerConfig{
 			GRPCPort: 50051,
-			HTTPPort: 8080,
+			HTTPPort: 9147,
 			DataDir:  filepath.Join(baseDir, "databases"),
 		},
 		Idle: IdleConfig{
