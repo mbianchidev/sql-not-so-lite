@@ -21,7 +21,7 @@ COPY --from=go-builder /sqnsl /usr/local/bin/sqnsl
 RUN mkdir -p /data
 ENV SQNSL_DATA_DIR=/data
 
-EXPOSE 50051 8080
+EXPOSE 50051 9147
 VOLUME ["/data"]
 
 ENTRYPOINT ["sqnsl"]

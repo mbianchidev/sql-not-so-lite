@@ -1,4 +1,4 @@
-const BASE_URL = import.meta.env.DEV ? 'http://localhost:8080' : '';
+const BASE_URL = import.meta.env.DEV ? 'http://localhost:9147' : '';
 
 export interface DBInfo {
   Name: string;
