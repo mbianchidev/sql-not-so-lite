@@ -1,0 +1,142 @@
+syntax = "proto3";
+
+package sqnsl.v1;
+
+option go_package = "github.com/mbianchidev/sql-not-so-lite/api/proto";
+
+service SqlNotSoLite {
+  // Database management
+  rpc CreateDatabase(CreateDatabaseRequest) returns (CreateDatabaseResponse);
+  rpc ListDatabases(ListDatabasesRequest) returns (ListDatabasesResponse);
+  rpc DropDatabase(DropDatabaseRequest) returns (DropDatabaseResponse);
+  rpc GetDatabaseInfo(GetDatabaseInfoRequest) returns (GetDatabaseInfoResponse);
+
+  // Query execution
+  rpc Execute(ExecuteRequest) returns (ExecuteResponse);
+  rpc Query(QueryRequest) returns (QueryResponse);
+
+  // Schema introspection
+  rpc GetSchema(GetSchemaRequest) returns (GetSchemaResponse);
+
+  // Health
+  rpc Ping(PingRequest) returns (PingResponse);
+}
+
+// Database management messages
+
+message CreateDatabaseRequest {
+  string name = 1;
+}
+
+message CreateDatabaseResponse {
+  string name = 1;
+  string path = 2;
+}
+
+message ListDatabasesRequest {}
+
+message DatabaseInfo {
+  string name = 1;
+  string path = 2;
+  int64 size_bytes = 3;
+  bool active = 4;
+  int64 table_count = 5;
+}
+
+message ListDatabasesResponse {
+  repeated DatabaseInfo databases = 1;
+}
+
+message DropDatabaseRequest {
+  string name = 1;
+}
+
+message DropDatabaseResponse {
+  bool success = 1;
+}
+
+message GetDatabaseInfoRequest {
+  string name = 1;
+}
+
+message GetDatabaseInfoResponse {
+  DatabaseInfo database = 1;
+}
+
+// Query execution messages
+
+message ExecuteRequest {
+  string database = 1;
+  string sql = 2;
+  repeated string params = 3;
+}
+
+message ExecuteResponse {
+  int64 rows_affected = 1;
+  int64 last_insert_id = 2;
+}
+
+message QueryRequest {
+  string database = 1;
+  string sql = 2;
+  repeated string params = 3;
+  int32 limit = 4;
+  int32 offset = 5;
+}
+
+message Column {
+  string name = 1;
+  string type = 2;
+}
+
+message Row {
+  repeated string values = 1;
+}
+
+message QueryResponse {
+  repeated Column columns = 1;
+  repeated Row rows = 2;
+  int64 total_count = 3;
+}
+
+// Schema introspection messages
+
+message TableInfo {
+  string name = 1;
+  repeated ColumnInfo columns = 2;
+  repeated IndexInfo indexes = 3;
+  int64 row_count = 4;
+}
+
+message ColumnInfo {
+  string name = 1;
+  string type = 2;
+  bool nullable = 3;
+  string default_value = 4;
+  bool primary_key = 5;
+}
+
+message IndexInfo {
+  string name = 1;
+  repeated string columns = 2;
+  bool unique = 3;
+}
+
+message GetSchemaRequest {
+  string database = 1;
+}
+
+message GetSchemaResponse {
+  repeated TableInfo tables = 1;
+}
+
+// Health messages
+
+message PingRequest {}
+
+message PingResponse {
+  string version = 1;
+  int64 uptime_seconds = 2;
+  int32 active_databases = 3;
+  int64 memory_bytes = 4;
+}

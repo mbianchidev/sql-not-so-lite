@@ -1,0 +1,23 @@
+services:
+  sqnsl:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
+      no_cache: true
+    container_name: sql-not-so-lite
+    ports:
+      - "50051:50051"
+      - "8080:8080"
+    volumes:
+      - sqnsl-data:/data
+    restart: unless-stopped
+    environment:
+      - SQNSL_DATA_DIR=/data
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  sqnsl-data:
