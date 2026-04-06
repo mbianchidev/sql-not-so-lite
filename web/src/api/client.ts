@@ -64,6 +64,7 @@ export interface DiscoveredDB {
   SizeBytes: number;
   LastModified: string;
   Status: string;
+  ErrorMessage: string;
   GitHubRepo: string;
   GitHubURL: string;
   Priority: string;
@@ -140,9 +141,15 @@ export const api = {
 
   getStats: () => request<StatsInfo>('/api/stats'),
 
-  scanDatabases: () => request<DiscoveredDB[]>('/api/scan', { method: 'POST' }),
+  scanDatabases: (paths?: string[]) =>
+    request<DiscoveredDB[]>('/api/scan', {
+      method: 'POST',
+      body: paths ? JSON.stringify({ paths }) : undefined,
+    }),
   listDiscovered: () => request<DiscoveredDB[]>('/api/discovered'),
   getDiscovered: (id: number) => request<DiscoveredDB>(`/api/discovered/${id}`),
+  deleteDiscovered: (id: number) =>
+    request<{ success: boolean }>(`/api/discovered/${id}`, { method: 'DELETE' }),
   startReplication: (id: number) => request<{ success: boolean }>(`/api/discovered/${id}/replicate`, { method: 'POST' }),
   stopReplication: (id: number) => request<{ success: boolean }>(`/api/discovered/${id}/replicate`, { method: 'DELETE' }),
   restoreSnapshot: (id: number, version?: number) =>

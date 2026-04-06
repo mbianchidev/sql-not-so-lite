@@ -30,12 +30,24 @@ function statusClass(status: string): string {
   }
 }
 
+function statusLabel(status: string): string {
+  switch (status) {
+    case 'replicating': return 'Replicating';
+    case 'paused': return 'Paused';
+    case 'error': return 'Error';
+    case 'archived': return 'Archived';
+    default: return 'Discovered';
+  }
+}
+
 export function DiscoveredPanel({ selectedId, onSelect }: Props) {
   const [databases, setDatabases] = useState<DiscoveredDB[]>([]);
   const [loading, setLoading] = useState(false);
   const [scanning, setScanning] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [actionLoading, setActionLoading] = useState<number | null>(null);
+  const [scanPath, setScanPath] = useState('');
+  const [showScanInput, setShowScanInput] = useState(false);
 
   const refresh = useCallback(async () => {
     try {
@@ -52,17 +64,25 @@ export function DiscoveredPanel({ selectedId, onSelect }: Props) {
 
   useEffect(() => { refresh(); }, [refresh]);
 
-  const handleScan = async () => {
+  const handleScan = async (paths?: string[]) => {
     try {
       setScanning(true);
       setError(null);
-      const dbs = await api.scanDatabases();
+      const dbs = await api.scanDatabases(paths);
       setDatabases(dbs || []);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Scan failed');
     } finally {
       setScanning(false);
     }
+  };
+
+  const handleScanPath = async () => {
+    const trimmed = scanPath.trim();
+    if (!trimmed) return;
+    await handleScan([trimmed]);
+    setScanPath('');
+    setShowScanInput(false);
   };
 
   const handleReplicate = async (id: number) => {
@@ -89,13 +109,28 @@ export function DiscoveredPanel({ selectedId, onSelect }: Props) {
     }
   };
 
-  const handleRestore = async (id: number) => {
+  const handleRestore = async (id: number, name: string) => {
+    if (!confirm(`Restore database "${name}"? This will overwrite the file at its original source path.`)) return;
     try {
       setActionLoading(id);
       await api.restoreSnapshot(id);
       await refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to restore');
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
+  const handleRemove = async (id: number, name: string) => {
+    if (!confirm(`Remove "${name}" from discovered databases? This does not delete the original file.`)) return;
+    try {
+      setActionLoading(id);
+      await api.deleteDiscovered(id);
+      if (selectedId === id) onSelect(null);
+      await refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to remove');
     } finally {
       setActionLoading(null);
     }
@@ -108,12 +143,35 @@ export function DiscoveredPanel({ selectedId, onSelect }: Props) {
       <div className="discovered-header">
         <h3>Discovered Databases</h3>
         <div className="discovered-actions">
-          <button className="btn-primary" onClick={handleScan} disabled={scanning}>
+          <button className="btn-primary" onClick={() => handleScan()} disabled={scanning}>
             {scanning ? 'Scanning…' : '⟳ Scan'}
+          </button>
+          <button
+            className="btn-sm"
+            onClick={() => setShowScanInput(!showScanInput)}
+            title="Scan a specific path"
+          >
+            📁
           </button>
           <button className="btn-icon" onClick={refresh} title="Refresh list">⟳</button>
         </div>
       </div>
+
+      {showScanInput && (
+        <div className="scan-path-input">
+          <input
+            type="text"
+            value={scanPath}
+            onChange={(e) => setScanPath(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && handleScanPath()}
+            placeholder="Enter path to scan…"
+            disabled={scanning}
+          />
+          <button className="btn-sm" onClick={handleScanPath} disabled={scanning || !scanPath.trim()}>
+            Scan Path
+          </button>
+        </div>
+      )}
 
       {error && <div className="error-msg">{error}</div>}
       {loading && <div className="loading">Loading…</div>}
@@ -128,6 +186,7 @@ export function DiscoveredPanel({ selectedId, onSelect }: Props) {
             <div className="discovered-item-header">
               <span className={`status-indicator ${statusClass(db.Status)}`} />
               <span className="discovered-name">{db.Name}</span>
+              <span className="discovered-status-label">{statusLabel(db.Status)}</span>
               <span className={`priority-badge priority-${db.Priority}`}>
                 {PRIORITY_LABELS[db.Priority] ?? db.Priority}
               </span>
@@ -136,6 +195,10 @@ export function DiscoveredPanel({ selectedId, onSelect }: Props) {
             <div className="discovered-item-meta">
               <span className="discovered-path" title={db.SourcePath}>{db.SourcePath}</span>
             </div>
+
+            {db.Status === 'error' && db.ErrorMessage && (
+              <div className="discovered-error-detail">⚠ {db.ErrorMessage}</div>
+            )}
 
             <div className="discovered-item-details">
               <span>{formatSize(db.SizeBytes)}</span>
@@ -159,13 +222,13 @@ export function DiscoveredPanel({ selectedId, onSelect }: Props) {
             </div>
 
             <div className="discovered-item-actions">
-              {db.Status === 'discovered' && (
+              {(db.Status === 'discovered' || db.Status === 'paused' || db.Status === 'error') && (
                 <button
                   className="btn-sm"
                   onClick={(e) => { e.stopPropagation(); handleReplicate(db.ID); }}
                   disabled={actionLoading === db.ID}
                 >
-                  ▶ Replicate
+                  {db.Status === 'paused' ? '▶ Resume' : db.Status === 'error' ? '↻ Retry' : '▶ Replicate'}
                 </button>
               )}
               {db.Status === 'replicating' && (
@@ -180,12 +243,20 @@ export function DiscoveredPanel({ selectedId, onSelect }: Props) {
               {(db.Status === 'replicating' || db.Status === 'paused') && (
                 <button
                   className="btn-sm"
-                  onClick={(e) => { e.stopPropagation(); handleRestore(db.ID); }}
+                  onClick={(e) => { e.stopPropagation(); handleRestore(db.ID, db.Name); }}
                   disabled={actionLoading === db.ID}
                 >
                   ↻ Restore
                 </button>
               )}
+              <button
+                className="btn-danger-sm"
+                onClick={(e) => { e.stopPropagation(); handleRemove(db.ID, db.Name); }}
+                disabled={actionLoading === db.ID}
+                title="Remove from catalog"
+              >
+                ✕
+              </button>
             </div>
           </div>
         ))}

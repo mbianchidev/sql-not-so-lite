@@ -447,21 +447,18 @@ func (s *HTTPServer) handleDiscoveredItem(w http.ResponseWriter, r *http.Request
 }
 
 func (s *HTTPServer) handleDiscoveredGet(w http.ResponseWriter, r *http.Request, id int64) {
-	if r.Method != http.MethodGet {
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
+	switch r.Method {
+	case http.MethodGet:
+		d, err := s.catalog.GetDiscovered(id)
+		if err != nil {
+			writeError(w, http.StatusNotFound, "database not found")
+			return
+		}
 
-	d, err := s.catalog.GetDiscovered(id)
-	if err != nil {
-		writeError(w, http.StatusNotFound, "database not found")
-		return
-	}
+		result := discoveredToJSON(d)
 
-	result := discoveredToJSON(d)
-
-	// Include replication state if available
-	rs, err := s.catalog.GetReplicationState(id)
+		// Include replication state if available
+		rs, err := s.catalog.GetReplicationState(id)
 	if err == nil {
 		result["replication"] = map[string]interface{}{
 			"replica_name":    rs.ReplicaName,
@@ -474,6 +471,17 @@ func (s *HTTPServer) handleDiscoveredGet(w http.ResponseWriter, r *http.Request,
 	}
 
 	writeJSON(w, http.StatusOK, result)
+
+	case http.MethodDelete:
+		if err := s.catalog.DeleteDiscovered(id); err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]bool{"success": true})
+
+	default:
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+	}
 }
 
 func (s *HTTPServer) handleReplicate(w http.ResponseWriter, r *http.Request, id int64) {
