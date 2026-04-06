@@ -11,8 +11,15 @@ Lightweight SQLite-as-a-service daemon. Manages multiple SQLite databases as fil
 └──────────┘         │ :50051 (gRPC)   │    ~/.sql-not-so-lite/
                      │ :8080  (HTTP)   │         databases/
 ┌──────────┐  HTTP   │                 │
-│  Web GUI │────────▶│                 │
-└──────────┘         └─────────────────┘
+│  Web GUI │────────▶│                 │    ┌────────────────┐
+└──────────┘         │   ┌──────────┐  │───▶│ catalog.sqlite │
+                     │   │ scanner  │  │    └────────────────┘
+  ~/                 │   │ catalog  │  │    ┌────────────────┐
+  ├── .docker/       │   │ replica- │  │───▶│   replicas/    │
+  ├── workspace/     │   │   tor    │  │    │   snapshots/   │
+  ├── app-data/  ◀───│   │ schema   │  │    └────────────────┘
+  └── .../*.sqlite   │   └──────────┘  │    ~/.sql-not-so-lite/
+                     └─────────────────┘
 ```
 
 ## Features
@@ -23,6 +30,11 @@ Lightweight SQLite-as-a-service daemon. Manages multiple SQLite databases as fil
 - **Idle management**: Closes idle connections automatically, stays dormant when unused (~5-10MB RSS)
 - **Single binary**: GUI embedded via `go:embed` — one file to run
 - **Cross-platform**: macOS (launchd), Linux (systemd), Docker
+- **Database discovery**: Scans `$HOME` for SQLite databases across containers, app data dirs, and workspaces
+- **WAL-aware replication**: Replicates discovered databases with WAL-optimized change detection
+- **Point-in-time recovery**: Restore any discovered database from snapshots
+- **Schema versioning**: Tracks schema changes with transition history (v0 = initial creation)
+- **GitHub repo detection**: Links discovered databases to their upstream GitHub repositories
 
 ## Quick Start
 
@@ -63,6 +75,15 @@ sqnsl uninstall     Remove system service
 sqnsl config        Show configuration
 sqnsl config init   Create default config file
 sqnsl version       Print version
+sqnsl scan [path...]       Scan for SQLite databases
+sqnsl discovered           List discovered databases
+sqnsl replicate <name>     Start replicating a discovered database
+sqnsl replicate stop <name> Stop replication
+sqnsl restore <name>       Restore from replica snapshot
+sqnsl restore <name> -v N  Restore specific snapshot version
+sqnsl restore <name> --to <path>  Restore to alternate path
+sqnsl versions <name>      List schema versions
+sqnsl transitions <name>   Show schema transition history
 ```
 
 ## Configuration
@@ -87,6 +108,19 @@ max_result_rows = 100000
 [logging]
 level = "info"
 file = "~/.sql-not-so-lite/sqnsl.log"
+
+[scanner]
+scan_root = "~/"
+file_extensions = [".sqlite", ".db", ".sqlite3", ".sqlitedb"]
+exclude_patterns = ["node_modules", ".git/objects", "*.tmp"]
+scan_interval = "1h"
+
+[replicator]
+enabled = true
+sync_interval = "5s"
+snapshot_retention = 10
+replica_dir = "~/.sql-not-so-lite/replicas"
+snapshot_dir = "~/.sql-not-so-lite/snapshots"
 ```
 
 Run `sqnsl config init` to create the default config file.
@@ -140,6 +174,15 @@ grpcurl -plaintext -d '{"database":"myapp","sql":"SELECT * FROM users","limit":1
 | POST | `/api/databases/:name/query` | Execute SQL `{"sql":"..."}` |
 | GET | `/api/health` | Health check |
 | GET | `/api/stats` | Memory, connections, uptime |
+| POST | `/api/scan` | Trigger filesystem scan |
+| GET | `/api/discovered` | List discovered databases |
+| GET | `/api/discovered/:id` | Get discovered DB details |
+| POST | `/api/discovered/:id/replicate` | Start replication |
+| DELETE | `/api/discovered/:id/replicate` | Stop replication |
+| POST | `/api/discovered/:id/restore` | Restore `{"version":N}` |
+| GET | `/api/discovered/:id/snapshots` | List snapshots |
+| GET | `/api/discovered/:id/versions` | Schema versions |
+| GET | `/api/discovered/:id/transitions` | Schema transitions |
 
 ## Web GUI
 
@@ -151,6 +194,62 @@ Access at `http://localhost:8080` when the daemon is running.
 - **SQL Editor**: Monaco-based with syntax highlighting and Ctrl+Enter execution
 - **Results**: Sortable table with CSV/JSON export
 - **Dark/Light theme**: Toggle in header
+- **Discovered databases**: Panel showing all discovered SQLite databases with priority badges and GitHub repo links
+- **Replication status**: Live indicators for replication state per database
+- **Schema timeline**: Version history viewer with schema transition diffs
+- **Snapshot restore**: One-click restore from any available snapshot
+
+## Database Discovery & Replication
+
+### Scanning
+
+The scanner walks `$HOME` (configurable via `scan_root`) looking for SQLite files. Each candidate is validated by checking the first 16 bytes for the SQLite magic header (`SQLite format 3\000`). Discovered databases are recorded in an internal catalog (`catalog.sqlite`) with metadata like path, size, modification time, and priority tier.
+
+Scanning runs on a configurable interval (`scan_interval`) and can also be triggered on-demand via `sqnsl scan` or `POST /api/scan`.
+
+### Priority tiers
+
+Discovered databases are classified by location to surface the most relevant ones first:
+
+| Priority | Location pattern | Examples |
+|----------|-----------------|----------|
+| 1 — Docker/OrbStack | `~/.docker/`, `~/.orbstack/` | Container-managed databases |
+| 2 — Workspace | `~/workspace/`, `~/projects/` | Active development databases |
+| 3 — Copilot CLI | `~/.copilot/` | Copilot session databases |
+| 4 — App Data | `~/Library/`, `~/.config/`, `~/.local/` | Application state databases |
+| 5 — Other | Everything else under `$HOME` | Miscellaneous databases |
+
+### GitHub repo detection
+
+For each discovered database, the scanner walks up the directory tree looking for a `.git/config` file. If found, it parses the remote URL to extract the GitHub repository (e.g., `owner/repo`) and stores the association in the catalog. This lets you see which project each database belongs to.
+
+### Replication
+
+Replication creates and maintains a copy of a discovered database under `replica_dir`:
+
+1. **Initial sync**: Uses `VACUUM INTO` to create a consistent baseline copy of the source database.
+2. **Incremental sync**: On each `sync_interval` tick, the replicator checks the source WAL for new frames. If changes are detected, a new snapshot is taken and the replica is updated.
+3. **Snapshots**: Each sync creates a timestamped snapshot in `snapshot_dir`. Old snapshots are pruned based on `snapshot_retention`.
+
+WAL-aware change detection avoids unnecessary copies when a database hasn't changed.
+
+### Schema versioning
+
+Every discovered database has its schema tracked. Version 0 (`v0`) represents the initial schema at discovery time. Each subsequent schema change increments the version and records a transition containing the before/after DDL diff.
+
+View schema history with `sqnsl versions <name>` and transition details with `sqnsl transitions <name>`.
+
+### Point-in-time recovery
+
+Restore a discovered database from any retained snapshot:
+
+```bash
+sqnsl restore mydb              # Restore latest snapshot (in-place)
+sqnsl restore mydb -v 3         # Restore snapshot version 3
+sqnsl restore mydb --to ./copy  # Restore to alternate path
+```
+
+Restores are atomic — the target file is written via a temporary file and renamed.
 
 ## Architecture
 
@@ -158,6 +257,11 @@ Access at `http://localhost:8080` when the daemon is running.
 sql-not-so-lite/
 ├── cmd/sqnsl/           # CLI entrypoint (cobra)
 ├── internal/
+│   ├── catalog/         # Internal meta-database (catalog.sqlite)
+│   ├── scanner/         # Filesystem SQLite discovery
+│   ├── replicator/      # WAL-aware replication engine
+│   │   └── wal/         # WAL frame parser
+│   ├── schema/          # Schema version tracking
 │   ├── config/          # TOML config loading
 │   ├── daemon/          # Lifecycle, PID file, signals
 │   ├── server/          # gRPC + HTTP servers
