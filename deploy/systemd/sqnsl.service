@@ -1,0 +1,14 @@
+[Unit]
+Description=sql-not-so-lite SQLite daemon
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/sqnsl start
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

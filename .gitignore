@@ -1,0 +1,26 @@
+# Binaries
+sqnsl
+*.exe
+
+# Build
+internal/server/static/
+
+# Dependencies
+web/node_modules/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Data (don't commit user databases)
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+
+# Logs
+*.log
