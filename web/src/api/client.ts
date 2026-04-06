@@ -54,6 +54,45 @@ export interface StatsInfo {
   goroutines: number;
 }
 
+export interface DiscoveredDB {
+  ID: number;
+  Name: string;
+  SourcePath: string;
+  SQLiteVersion: string;
+  PageSize: number;
+  JournalMode: string;
+  SizeBytes: number;
+  LastModified: string;
+  Status: string;
+  GitHubRepo: string;
+  GitHubURL: string;
+  Priority: string;
+}
+
+export interface SnapshotInfo {
+  ID: number;
+  Version: number;
+  SchemaVersion: number;
+  CreatedAt: string;
+  SizeBytes: number;
+  Trigger: string;
+}
+
+export interface SchemaVersionInfo {
+  Version: number;
+  SchemaHash: string;
+  SchemaSQL: string;
+  DetectedAt: string;
+}
+
+export interface SchemaTransitionInfo {
+  FromVersion: number;
+  ToVersion: number;
+  Summary: string;
+  DetectedDDL: string;
+  DetectedAt: string;
+}
+
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const res = await fetch(`${BASE_URL}${path}`, {
     ...options,
@@ -100,4 +139,18 @@ export const api = {
   getHealth: () => request<{ status: string; version: string }>('/api/health'),
 
   getStats: () => request<StatsInfo>('/api/stats'),
+
+  scanDatabases: () => request<DiscoveredDB[]>('/api/scan', { method: 'POST' }),
+  listDiscovered: () => request<DiscoveredDB[]>('/api/discovered'),
+  getDiscovered: (id: number) => request<DiscoveredDB>(`/api/discovered/${id}`),
+  startReplication: (id: number) => request<{ success: boolean }>(`/api/discovered/${id}/replicate`, { method: 'POST' }),
+  stopReplication: (id: number) => request<{ success: boolean }>(`/api/discovered/${id}/replicate`, { method: 'DELETE' }),
+  restoreSnapshot: (id: number, version?: number) =>
+    request<{ success: boolean }>(`/api/discovered/${id}/restore`, {
+      method: 'POST',
+      body: JSON.stringify(version != null ? { version } : {}),
+    }),
+  listSnapshots: (id: number) => request<SnapshotInfo[]>(`/api/discovered/${id}/snapshots`),
+  listVersions: (id: number) => request<SchemaVersionInfo[]>(`/api/discovered/${id}/versions`),
+  listTransitions: (id: number) => request<SchemaTransitionInfo[]>(`/api/discovered/${id}/transitions`),
 };

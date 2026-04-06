@@ -4,15 +4,17 @@ import { SchemaViewer } from './components/SchemaViewer';
 import { TableBrowser } from './components/TableBrowser';
 import { SqlEditor } from './components/SqlEditor';
 import { StatsPanel } from './components/StatsPanel';
+import { DiscoveredPanel } from './components/DiscoveredPanel';
 import { useDatabases, useSchema, useStats } from './hooks/useDatabase';
 
-type Tab = 'browse' | 'schema' | 'query';
+type Tab = 'browse' | 'schema' | 'query' | 'discovered';
 
 function App() {
   const [selectedDb, setSelectedDb] = useState<string | null>(null);
   const [selectedTable, setSelectedTable] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<Tab>('browse');
   const [darkMode, setDarkMode] = useState(true);
+  const [selectedDiscoveredId, setSelectedDiscoveredId] = useState<number | null>(null);
 
   const { databases, loading, error, refresh } = useDatabases();
   const { tables, refresh: refreshSchema } = useSchema(selectedDb);
@@ -21,6 +23,7 @@ function App() {
   const handleSelectDb = (name: string) => {
     setSelectedDb(name);
     setSelectedTable(null);
+    if (activeTab === 'discovered') setActiveTab('browse');
   };
 
   const handleSelectTable = (name: string) => {
@@ -57,9 +60,9 @@ function App() {
           {loading && <div className="loading">Loading...</div>}
           {error && <div className="error-msg">{error}</div>}
 
-          {selectedDb ? (
-            <>
-              <div className="tabs">
+          <div className="tabs">
+            {selectedDb && (
+              <>
                 <button
                   className={`tab ${activeTab === 'browse' ? 'active' : ''}`}
                   onClick={() => setActiveTab('browse')}
@@ -78,9 +81,25 @@ function App() {
                 >
                   SQL Editor
                 </button>
-              </div>
+              </>
+            )}
+            <button
+              className={`tab ${activeTab === 'discovered' ? 'active' : ''}`}
+              onClick={() => { setActiveTab('discovered'); setSelectedDb(null); }}
+            >
+              Discovered
+            </button>
+          </div>
 
-              <div className="tab-content">
+          <div className="tab-content">
+            {activeTab === 'discovered' && (
+              <DiscoveredPanel
+                selectedId={selectedDiscoveredId}
+                onSelect={setSelectedDiscoveredId}
+              />
+            )}
+            {activeTab !== 'discovered' && selectedDb ? (
+              <>
                 {activeTab === 'browse' && selectedTable && (
                   <TableBrowser dbName={selectedDb} tableName={selectedTable} />
                 )}
@@ -101,14 +120,14 @@ function App() {
                 {activeTab === 'query' && (
                   <SqlEditor dbName={selectedDb} />
                 )}
+              </>
+            ) : activeTab !== 'discovered' ? (
+              <div className="welcome">
+                <h2>Welcome to sql-not-so-lite</h2>
+                <p>Select a database from the sidebar or create a new one to get started.</p>
               </div>
-            </>
-          ) : (
-            <div className="welcome">
-              <h2>Welcome to sql-not-so-lite</h2>
-              <p>Select a database from the sidebar or create a new one to get started.</p>
-            </div>
-          )}
+            ) : null}
+          </div>
         </main>
       </div>
     </div>
