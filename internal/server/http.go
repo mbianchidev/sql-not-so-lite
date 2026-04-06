@@ -235,8 +235,8 @@ func (s *HTTPServer) handleTables(w http.ResponseWriter, r *http.Request, dbName
 	}
 
 	escapedTable := strings.ReplaceAll(tableName, "\"", "\"\"")
-	sql := fmt.Sprintf("SELECT * FROM \"%s\"", escapedTable)
-	result, err := s.svc.Query(r.Context(), dbName, sql, nil, limit, offset)
+	sql := fmt.Sprintf("SELECT * FROM \"%s\" LIMIT %d OFFSET %d", escapedTable, limit, offset)
+	result, err := s.svc.Query(r.Context(), dbName, sql, nil, 0, 0)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return

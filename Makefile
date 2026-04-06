@@ -52,7 +52,7 @@ uninstall:
 # Clean build artifacts
 clean:
 	rm -f $(BINARY)
-	rm -rf $(STATIC_DIR)
+	rm -rf $(STATIC_DIR)/assets $(STATIC_DIR)/favicon.svg $(STATIC_DIR)/icons.svg
 	cd $(WEB_DIR) && rm -rf node_modules dist
 
 # Docker build

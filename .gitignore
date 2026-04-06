@@ -1,9 +1,10 @@
 # Binaries
-sqnsl
+/sqnsl
 *.exe
 
-# Build
-internal/server/static/
+# Build (keep placeholder index.html for go:embed)
+internal/server/static/*
+!internal/server/static/index.html
 
 # Dependencies
 web/node_modules/

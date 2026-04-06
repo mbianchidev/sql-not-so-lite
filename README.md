@@ -29,7 +29,7 @@ Lightweight SQLite-as-a-service daemon. Manages multiple SQLite databases as fil
 ### Build from source
 
 ```bash
-# Prerequisites: Go 1.21+, Node.js 18+, protoc (for proto changes)
+# Prerequisites: Go 1.25+, Node.js 22+, protoc (for proto changes)
 make all        # Build GUI + Go binary
 ./sqnsl start   # Start daemon (foreground)
 ```
