@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/mbianchidev/sql-not-so-lite/internal/catalog"
 	"github.com/mbianchidev/sql-not-so-lite/internal/config"
 	"github.com/mbianchidev/sql-not-so-lite/internal/idle"
 	"github.com/mbianchidev/sql-not-so-lite/internal/server"
@@ -25,6 +26,7 @@ type Daemon struct {
 	grpcServer  *server.GRPCServer
 	httpServer  *server.HTTPServer
 	idleTracker *idle.Tracker
+	catalog     *catalog.Catalog
 }
 
 func New(cfg *config.Config) (*Daemon, error) {
@@ -50,6 +52,11 @@ func New(cfg *config.Config) (*Daemon, error) {
 
 	tracker := idle.NewTracker(manager, connTimeout, checkInterval)
 
+	cat, err := catalog.Open(cfg.Server.DataDir)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open catalog: %w", err)
+	}
+
 	return &Daemon{
 		cfg:         cfg,
 		manager:     manager,
@@ -57,6 +64,7 @@ func New(cfg *config.Config) (*Daemon, error) {
 		grpcServer:  server.NewGRPCServer(svc, cfg.Server.GRPCPort),
 		httpServer:  server.NewHTTPServer(svc, cfg.Server.HTTPPort),
 		idleTracker: tracker,
+		catalog:     cat,
 	}, nil
 }
 
@@ -70,6 +78,7 @@ func (d *Daemon) Run() error {
 	log.Printf("  data dir:  %s", d.cfg.Server.DataDir)
 	log.Printf("  gRPC port: %d", d.cfg.Server.GRPCPort)
 	log.Printf("  HTTP port: %d", d.cfg.Server.HTTPPort)
+	log.Printf("  catalog:   %s/catalog.sqlite", d.cfg.Server.DataDir)
 
 	d.idleTracker.Start()
 
@@ -114,11 +123,17 @@ func (d *Daemon) Shutdown() error {
 		log.Printf("HTTP server shutdown error: %v", err)
 	}
 
+	if d.catalog != nil {
+		d.catalog.Close()
+	}
+
 	d.manager.CloseAll()
 
 	log.Println("Shutdown complete")
 	return nil
 }
+
+func (d *Daemon) Catalog() *catalog.Catalog { return d.catalog }
 
 func (d *Daemon) pidFilePath() string {
 	homeDir, _ := os.UserHomeDir()

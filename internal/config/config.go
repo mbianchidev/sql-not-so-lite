@@ -9,10 +9,12 @@ import (
 )
 
 type Config struct {
-	Server ServerConfig `toml:"server"`
-	Idle   IdleConfig   `toml:"idle"`
-	Limits LimitsConfig `toml:"limits"`
-	Log    LogConfig    `toml:"logging"`
+	Server     ServerConfig     `toml:"server"`
+	Idle       IdleConfig       `toml:"idle"`
+	Limits     LimitsConfig     `toml:"limits"`
+	Log        LogConfig        `toml:"logging"`
+	Scanner    ScannerConfig    `toml:"scanner"`
+	Replicator ReplicatorConfig `toml:"replicator"`
 }
 
 type ServerConfig struct {
@@ -37,6 +39,26 @@ type LogConfig struct {
 	File  string `toml:"file"`
 }
 
+type ScannerConfig struct {
+	ScanRoot               string   `toml:"scan_root"`
+	FileExtensions         []string `toml:"file_extensions"`
+	ExcludePatterns        []string `toml:"exclude_patterns"`
+	PriorityPathsDocker    []string `toml:"priority_paths_docker"`
+	PriorityPathsWorkspace []string `toml:"priority_paths_workspace"`
+	PriorityPathsCopilot   []string `toml:"priority_paths_copilot"`
+	PriorityPathsAppData   []string `toml:"priority_paths_app_data"`
+	AppDataDotdirPattern   string   `toml:"app_data_dotdir_pattern"`
+	ScanInterval           string   `toml:"scan_interval"`
+}
+
+type ReplicatorConfig struct {
+	Enabled           bool   `toml:"enabled"`
+	SyncInterval      string `toml:"sync_interval"`
+	SnapshotRetention int    `toml:"snapshot_retention"`
+	ReplicaDir        string `toml:"replica_dir"`
+	SnapshotDir       string `toml:"snapshot_dir"`
+}
+
 func DefaultConfig() *Config {
 	homeDir, _ := os.UserHomeDir()
 	baseDir := filepath.Join(homeDir, ".sql-not-so-lite")
@@ -59,6 +81,24 @@ func DefaultConfig() *Config {
 		Log: LogConfig{
 			Level: "info",
 			File:  filepath.Join(baseDir, "sqnsl.log"),
+		},
+		Scanner: ScannerConfig{
+			ScanRoot:               homeDir,
+			FileExtensions:         []string{".sqlite", ".db", ".sqlite3", ".sqlitedb"},
+			ExcludePatterns:        []string{"node_modules", ".git/objects", "*.tmp"},
+			PriorityPathsDocker:    []string{filepath.Join(homeDir, ".orbstack"), filepath.Join(homeDir, ".docker"), "/var/lib/docker/volumes"},
+			PriorityPathsWorkspace: []string{filepath.Join(homeDir, "workspace")},
+			PriorityPathsCopilot:   []string{filepath.Join(homeDir, ".copilot")},
+			PriorityPathsAppData:   []string{filepath.Join(homeDir, "Library", "Application Support")},
+			AppDataDotdirPattern:   filepath.Join(homeDir, ".{repo-name}", "data"),
+			ScanInterval:           "1h",
+		},
+		Replicator: ReplicatorConfig{
+			Enabled:           true,
+			SyncInterval:      "5s",
+			SnapshotRetention: 10,
+			ReplicaDir:        filepath.Join(baseDir, "replicas"),
+			SnapshotDir:       filepath.Join(baseDir, "snapshots"),
 		},
 	}
 }
@@ -95,6 +135,13 @@ func (c *Config) EnsureDirs() error {
 	logDir := filepath.Dir(c.Log.File)
 	if err := os.MkdirAll(logDir, 0755); err != nil {
 		return fmt.Errorf("failed to create log dir %s: %w", logDir, err)
+	}
+
+	if err := os.MkdirAll(c.Replicator.ReplicaDir, 0755); err != nil {
+		return fmt.Errorf("failed to create replica dir %s: %w", c.Replicator.ReplicaDir, err)
+	}
+	if err := os.MkdirAll(c.Replicator.SnapshotDir, 0755); err != nil {
+		return fmt.Errorf("failed to create snapshot dir %s: %w", c.Replicator.SnapshotDir, err)
 	}
 
 	return nil

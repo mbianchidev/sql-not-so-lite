@@ -1,6 +1,7 @@
 package main
 
 import (
+	"database/sql"
 	"fmt"
 	"log"
 	"os"
@@ -9,9 +10,14 @@ import (
 	"runtime"
 	"strconv"
 	"syscall"
+	"time"
 
+	"github.com/mbianchidev/sql-not-so-lite/internal/catalog"
 	"github.com/mbianchidev/sql-not-so-lite/internal/config"
 	"github.com/mbianchidev/sql-not-so-lite/internal/daemon"
+	"github.com/mbianchidev/sql-not-so-lite/internal/replicator"
+	"github.com/mbianchidev/sql-not-so-lite/internal/scanner"
+	"github.com/mbianchidev/sql-not-so-lite/internal/schema"
 	"github.com/mbianchidev/sql-not-so-lite/internal/server"
 	"github.com/spf13/cobra"
 )
@@ -269,9 +275,413 @@ var versionCmd = &cobra.Command{
 	},
 }
 
+var scanCmd = &cobra.Command{
+	Use:   "scan [path...]",
+	Short: "Scan for SQLite databases",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		cfg, err := config.Load()
+		if err != nil {
+			return fmt.Errorf("failed to load config: %w", err)
+		}
+
+		cat, err := catalog.Open(cfg.Server.DataDir)
+		if err != nil {
+			return fmt.Errorf("failed to open catalog: %w", err)
+		}
+		defer cat.Close()
+
+		roots := []string{cfg.Scanner.ScanRoot}
+		if len(args) > 0 {
+			roots = args
+		}
+
+		var allFiles []scanner.DiscoveredFile
+		for _, root := range roots {
+			scanCfg := cfg.Scanner
+			scanCfg.ScanRoot = root
+			s := scanner.New(scanCfg, cfg.Server.DataDir)
+			files, err := s.Scan()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: scan of %s failed: %v\n", root, err)
+				continue
+			}
+			allFiles = append(allFiles, files...)
+		}
+
+		if len(allFiles) == 0 {
+			fmt.Println("No SQLite databases found.")
+			return nil
+		}
+
+		fmt.Printf("%-30s %-10s %-10s %-12s %-10s %s\n",
+			"NAME", "SIZE", "PAGE", "JOURNAL", "PRIORITY", "PATH")
+		fmt.Println(repeatChar('-', 100))
+
+		for _, f := range allFiles {
+			_, err := cat.UpsertDiscovered(&catalog.DiscoveredDB{
+				Name:          f.Name,
+				SourcePath:    f.Path,
+				SQLiteVersion: f.SQLiteVersion,
+				PageSize:      f.PageSize,
+				JournalMode:   f.JournalMode,
+				SizeBytes:     f.SizeBytes,
+				LastModified:  f.LastModified,
+				GitHubRepo:    f.GitHubRepo,
+				GitHubURL:     f.GitHubURL,
+				Priority:      f.Priority,
+			})
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: failed to upsert %s: %v\n", f.Name, err)
+			}
+
+			fmt.Printf("%-30s %-10s %-10d %-12s %-10s %s\n",
+				truncate(f.Name, 30), formatSize(f.SizeBytes), f.PageSize,
+				f.JournalMode, f.Priority, f.Path)
+		}
+
+		fmt.Printf("\n%d database(s) found and cataloged.\n", len(allFiles))
+		return nil
+	},
+}
+
+var discoveredCmd = &cobra.Command{
+	Use:   "discovered",
+	Short: "List discovered databases",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		cfg, err := config.Load()
+		if err != nil {
+			return fmt.Errorf("failed to load config: %w", err)
+		}
+
+		cat, err := catalog.Open(cfg.Server.DataDir)
+		if err != nil {
+			return fmt.Errorf("failed to open catalog: %w", err)
+		}
+		defer cat.Close()
+
+		dbs, err := cat.ListDiscovered()
+		if err != nil {
+			return fmt.Errorf("failed to list discovered databases: %w", err)
+		}
+
+		if len(dbs) == 0 {
+			fmt.Println("No discovered databases. Run 'sqnsl scan' first.")
+			return nil
+		}
+
+		fmt.Printf("%-30s %-40s %-12s %-10s %-20s %s\n",
+			"NAME", "PATH", "STATUS", "PRIORITY", "GITHUB REPO", "SIZE")
+		fmt.Println(repeatChar('-', 130))
+
+		for _, d := range dbs {
+			fmt.Printf("%-30s %-40s %-12s %-10s %-20s %s\n",
+				truncate(d.Name, 30), truncate(d.SourcePath, 40),
+				d.Status, d.Priority,
+				truncate(d.GitHubRepo, 20), formatSize(d.SizeBytes))
+		}
+
+		fmt.Printf("\n%d database(s)\n", len(dbs))
+		return nil
+	},
+}
+
+var replicateCmd = &cobra.Command{
+	Use:   "replicate <name>",
+	Short: "Start replicating a discovered database",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		name := args[0]
+
+		cfg, err := config.Load()
+		if err != nil {
+			return fmt.Errorf("failed to load config: %w", err)
+		}
+		if err := cfg.EnsureDirs(); err != nil {
+			return fmt.Errorf("failed to create directories: %w", err)
+		}
+
+		cat, err := catalog.Open(cfg.Server.DataDir)
+		if err != nil {
+			return fmt.Errorf("failed to open catalog: %w", err)
+		}
+		defer cat.Close()
+
+		db, err := cat.GetDiscoveredByName(name)
+		if err != nil {
+			return fmt.Errorf("database %q not found: %w", name, err)
+		}
+
+		replicaPath := filepath.Join(cfg.Replicator.ReplicaDir, db.Name+".sqlite")
+
+		fmt.Printf("Starting initial sync: %s → %s\n", db.SourcePath, replicaPath)
+		_, err = replicator.InitialSync(db.SourcePath, replicaPath)
+		if err != nil {
+			return fmt.Errorf("initial sync failed: %w", err)
+		}
+
+		// Extract and store schema as v0
+		srcDB, err := sql.Open("sqlite", db.SourcePath+"?_pragma=busy_timeout(5000)&_pragma=query_only(1)")
+		if err != nil {
+			return fmt.Errorf("failed to open source for schema: %w", err)
+		}
+		srcDB.SetMaxOpenConns(1)
+		rawSchema, err := schema.ExtractSchema(srcDB)
+		srcDB.Close()
+		if err != nil {
+			return fmt.Errorf("failed to extract schema: %w", err)
+		}
+		normalized := schema.NormalizeSchema(rawSchema)
+		hash := schema.HashSchema(normalized)
+
+		_, err = cat.InsertSchemaVersion(&catalog.SchemaVersion{
+			DatabaseID: db.ID,
+			Version:    0,
+			SchemaSQL:  rawSchema,
+			SchemaHash: hash,
+		})
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to store schema version: %v\n", err)
+		}
+
+		// Create initial snapshot record
+		snapshotPath := filepath.Join(cfg.Replicator.SnapshotDir, db.Name+"_v1.sqlite")
+		snapshotSize, err := replicator.CreateSnapshot(db.SourcePath, snapshotPath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to create snapshot: %v\n", err)
+		} else {
+			_, err = cat.InsertSnapshot(&catalog.Snapshot{
+				DatabaseID:    db.ID,
+				Version:       1,
+				SchemaVersion: 0,
+				SnapshotPath:  snapshotPath,
+				SizeBytes:     snapshotSize,
+				Trigger:       "initial",
+			})
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: failed to record snapshot: %v\n", err)
+			}
+		}
+
+		// Set replication state
+		err = cat.SetReplicationState(&catalog.ReplicationState{
+			DatabaseID:  db.ID,
+			ReplicaName: db.Name,
+			LastSync:    time.Now(),
+			SyncMode:    "full",
+		})
+		if err != nil {
+			return fmt.Errorf("failed to set replication state: %w", err)
+		}
+
+		// Update status to replicating
+		if err := cat.UpdateStatus(db.ID, "replicating", ""); err != nil {
+			return fmt.Errorf("failed to update status: %w", err)
+		}
+
+		fmt.Printf("Replication started for %q\n", name)
+		fmt.Printf("  Replica: %s\n", replicaPath)
+		fmt.Printf("  Schema hash: %s\n", hash[:12])
+		return nil
+	},
+}
+
+var replicateStopCmd = &cobra.Command{
+	Use:   "stop <name>",
+	Short: "Stop replicating a database",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		name := args[0]
+
+		cfg, err := config.Load()
+		if err != nil {
+			return fmt.Errorf("failed to load config: %w", err)
+		}
+
+		cat, err := catalog.Open(cfg.Server.DataDir)
+		if err != nil {
+			return fmt.Errorf("failed to open catalog: %w", err)
+		}
+		defer cat.Close()
+
+		db, err := cat.GetDiscoveredByName(name)
+		if err != nil {
+			return fmt.Errorf("database %q not found: %w", name, err)
+		}
+
+		if err := cat.UpdateStatus(db.ID, "paused", ""); err != nil {
+			return fmt.Errorf("failed to update status: %w", err)
+		}
+
+		fmt.Printf("Replication paused for %q\n", name)
+		return nil
+	},
+}
+
+var restoreCmd = &cobra.Command{
+	Use:   "restore <name>",
+	Short: "Restore a database from its replica",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		name := args[0]
+
+		cfg, err := config.Load()
+		if err != nil {
+			return fmt.Errorf("failed to load config: %w", err)
+		}
+
+		cat, err := catalog.Open(cfg.Server.DataDir)
+		if err != nil {
+			return fmt.Errorf("failed to open catalog: %w", err)
+		}
+		defer cat.Close()
+
+		db, err := cat.GetDiscoveredByName(name)
+		if err != nil {
+			return fmt.Errorf("database %q not found: %w", name, err)
+		}
+
+		snapshots, err := cat.ListSnapshots(db.ID)
+		if err != nil || len(snapshots) == 0 {
+			return fmt.Errorf("no snapshots available for %q", name)
+		}
+
+		// Pick snapshot: specific version or latest
+		ver, _ := cmd.Flags().GetInt("version")
+		var snap catalog.Snapshot
+		if ver > 0 {
+			found := false
+			for _, s := range snapshots {
+				if s.Version == ver {
+					snap = s
+					found = true
+					break
+				}
+			}
+			if !found {
+				return fmt.Errorf("snapshot version %d not found for %q", ver, name)
+			}
+		} else {
+			snap = snapshots[0] // latest (sorted DESC)
+		}
+
+		targetPath := db.SourcePath
+		if to, _ := cmd.Flags().GetString("to"); to != "" {
+			targetPath = to
+		}
+
+		fmt.Printf("Restoring %q from snapshot v%d → %s\n", name, snap.Version, targetPath)
+		if err := replicator.RestoreSnapshot(snap.SnapshotPath, targetPath); err != nil {
+			return fmt.Errorf("restore failed: %w", err)
+		}
+
+		fmt.Printf("Restore complete.\n")
+		return nil
+	},
+}
+
+var versionsCmd = &cobra.Command{
+	Use:   "versions <name>",
+	Short: "List schema versions for a database",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		name := args[0]
+
+		cfg, err := config.Load()
+		if err != nil {
+			return fmt.Errorf("failed to load config: %w", err)
+		}
+
+		cat, err := catalog.Open(cfg.Server.DataDir)
+		if err != nil {
+			return fmt.Errorf("failed to open catalog: %w", err)
+		}
+		defer cat.Close()
+
+		db, err := cat.GetDiscoveredByName(name)
+		if err != nil {
+			return fmt.Errorf("database %q not found: %w", name, err)
+		}
+
+		versions, err := cat.ListSchemaVersions(db.ID)
+		if err != nil {
+			return fmt.Errorf("failed to list schema versions: %w", err)
+		}
+
+		if len(versions) == 0 {
+			fmt.Printf("No schema versions recorded for %q\n", name)
+			return nil
+		}
+
+		fmt.Printf("%-10s %-14s %s\n", "VERSION", "HASH", "DETECTED AT")
+		fmt.Println(repeatChar('-', 50))
+
+		for _, v := range versions {
+			hash := v.SchemaHash
+			if len(hash) > 12 {
+				hash = hash[:12]
+			}
+			fmt.Printf("%-10d %-14s %s\n", v.Version, hash, v.DetectedAt.Format(time.RFC3339))
+		}
+		return nil
+	},
+}
+
+var transitionsCmd = &cobra.Command{
+	Use:   "transitions <name>",
+	Short: "Show schema transition history",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		name := args[0]
+
+		cfg, err := config.Load()
+		if err != nil {
+			return fmt.Errorf("failed to load config: %w", err)
+		}
+
+		cat, err := catalog.Open(cfg.Server.DataDir)
+		if err != nil {
+			return fmt.Errorf("failed to open catalog: %w", err)
+		}
+		defer cat.Close()
+
+		db, err := cat.GetDiscoveredByName(name)
+		if err != nil {
+			return fmt.Errorf("database %q not found: %w", name, err)
+		}
+
+		transitions, err := cat.ListTransitions(db.ID)
+		if err != nil {
+			return fmt.Errorf("failed to list transitions: %w", err)
+		}
+
+		if len(transitions) == 0 {
+			fmt.Printf("No schema transitions recorded for %q\n", name)
+			return nil
+		}
+
+		fmt.Printf("%-15s %-40s %s\n", "TRANSITION", "SUMMARY", "DETECTED AT")
+		fmt.Println(repeatChar('-', 75))
+
+		for _, t := range transitions {
+			label := fmt.Sprintf("v%d → v%d", t.FromVersion, t.ToVersion)
+			summary := t.Summary
+			if summary == "" {
+				summary = "(no summary)"
+			}
+			fmt.Printf("%-15s %-40s %s\n", label, truncate(summary, 40), t.DetectedAt.Format(time.RFC3339))
+		}
+		return nil
+	},
+}
+
 func init() {
 	startCmd.Flags().BoolP("daemon", "d", false, "Run in background")
 	configCmd.AddCommand(configInitCmd)
+
+	restoreCmd.Flags().IntP("version", "v", 0, "Specific snapshot version to restore")
+	restoreCmd.Flags().String("to", "", "Alternate restore target path")
+
+	replicateCmd.AddCommand(replicateStopCmd)
 
 	rootCmd.AddCommand(startCmd)
 	rootCmd.AddCommand(stopCmd)
@@ -282,6 +692,12 @@ func init() {
 	rootCmd.AddCommand(installCmd)
 	rootCmd.AddCommand(uninstallCmd)
 	rootCmd.AddCommand(versionCmd)
+	rootCmd.AddCommand(scanCmd)
+	rootCmd.AddCommand(discoveredCmd)
+	rootCmd.AddCommand(replicateCmd)
+	rootCmd.AddCommand(restoreCmd)
+	rootCmd.AddCommand(versionsCmd)
+	rootCmd.AddCommand(transitionsCmd)
 }
 
 func main() {
@@ -298,6 +714,24 @@ func formatSize(bytes int64) string {
 		return fmt.Sprintf("%.1f KB", float64(bytes)/1024)
 	}
 	return fmt.Sprintf("%.1f MB", float64(bytes)/(1024*1024))
+}
+
+func truncate(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	if max <= 3 {
+		return s[:max]
+	}
+	return s[:max-3] + "..."
+}
+
+func repeatChar(ch byte, n int) string {
+	b := make([]byte, n)
+	for i := range b {
+		b[i] = ch
+	}
+	return string(b)
 }
 
 func installLaunchd(exe string) error {
