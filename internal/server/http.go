@@ -344,7 +344,7 @@ func (s *HTTPServer) handleScan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var results []map[string]interface{}
+	results := make([]map[string]interface{}, 0, len(files))
 	for _, f := range files {
 		// Check if this DB already exists to preserve its status
 		existing, _ := s.catalog.GetDiscoveredByPath(f.Path)

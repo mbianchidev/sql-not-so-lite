@@ -68,8 +68,8 @@ export function DiscoveredPanel({ selectedId, onSelect }: Props) {
     try {
       setScanning(true);
       setError(null);
-      const dbs = await api.scanDatabases(paths);
-      setDatabases(dbs || []);
+      await api.scanDatabases(paths);
+      await refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Scan failed');
     } finally {
