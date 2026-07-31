@@ -105,16 +105,20 @@ function App() {
                 )}
                 {activeTab === 'browse' && !selectedTable && (
                   <SchemaViewer
+                    dbName={selectedDb}
                     tables={tables}
                     selectedTable={null}
                     onSelectTable={handleSelectTable}
+                    onSchemaChange={async () => { await Promise.all([refresh(), refreshSchema()]); }}
                   />
                 )}
                 {activeTab === 'schema' && (
                   <SchemaViewer
+                    dbName={selectedDb}
                     tables={tables}
                     selectedTable={selectedTable}
                     onSelectTable={setSelectedTable}
+                    onSchemaChange={async () => { await Promise.all([refresh(), refreshSchema()]); }}
                   />
                 )}
                 {activeTab === 'query' && (

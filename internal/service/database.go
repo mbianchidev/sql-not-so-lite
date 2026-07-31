@@ -62,6 +62,30 @@ type IndexInfo struct {
 	Unique  bool
 }
 
+type ColumnDefinition struct {
+	Name         string
+	Type         string
+	NotNull      bool
+	PrimaryKey   bool
+	DefaultValue *string
+}
+
+type CreateTableRequest struct {
+	Name    string
+	Columns []ColumnDefinition
+}
+
+var sqliteColumnTypes = map[string]struct{}{
+	"BLOB":     {},
+	"BOOLEAN":  {},
+	"DATE":     {},
+	"DATETIME": {},
+	"INTEGER":  {},
+	"NUMERIC":  {},
+	"REAL":     {},
+	"TEXT":     {},
+}
+
 func (s *DatabaseService) CreateDatabase(_ context.Context, name string) (*DBInfo, error) {
 	entry, err := s.manager.Create(name)
 	if err != nil {
@@ -144,6 +168,80 @@ func (s *DatabaseService) Execute(_ context.Context, dbName, sqlStr string, para
 		RowsAffected: rowsAffected,
 		LastInsertID: lastID,
 	}, nil
+}
+
+func (s *DatabaseService) CreateTable(_ context.Context, dbName string, req CreateTableRequest) error {
+	if err := validateIdentifier("table", req.Name); err != nil {
+		return err
+	}
+	if strings.Contains(req.Name, "/") {
+		return fmt.Errorf("table name cannot contain '/'")
+	}
+	if len(req.Columns) == 0 {
+		return fmt.Errorf("table must have at least one column")
+	}
+
+	primaryKeys := 0
+	columnSQL := make([]string, 0, len(req.Columns))
+	seen := make(map[string]struct{}, len(req.Columns))
+	for _, column := range req.Columns {
+		key := strings.ToLower(column.Name)
+		if _, exists := seen[key]; exists {
+			return fmt.Errorf("duplicate column %q", column.Name)
+		}
+		seen[key] = struct{}{}
+
+		if column.PrimaryKey {
+			primaryKeys++
+		}
+		definition, err := buildColumnDefinition(column, false)
+		if err != nil {
+			return err
+		}
+		columnSQL = append(columnSQL, definition)
+	}
+	if primaryKeys > 1 {
+		return fmt.Errorf("table can have at most one primary key column")
+	}
+
+	entry, err := s.manager.Get(dbName)
+	if err != nil {
+		return err
+	}
+	statement := fmt.Sprintf("CREATE TABLE %s (%s)", quoteIdentifier(req.Name), strings.Join(columnSQL, ", "))
+	if _, err := entry.DB.Exec(statement); err != nil {
+		return fmt.Errorf("create table failed: %w", err)
+	}
+	return nil
+}
+
+func (s *DatabaseService) AddColumn(_ context.Context, dbName, tableName string, column ColumnDefinition) error {
+	if err := validateExistingIdentifier("table", tableName); err != nil {
+		return err
+	}
+	if strings.Contains(tableName, "/") {
+		return fmt.Errorf("table name cannot contain '/'")
+	}
+	if column.PrimaryKey {
+		return fmt.Errorf("primary key columns cannot be added to an existing table")
+	}
+	if column.NotNull && column.DefaultValue == nil {
+		return fmt.Errorf("a default value is required for a NOT NULL column")
+	}
+
+	definition, err := buildColumnDefinition(column, true)
+	if err != nil {
+		return err
+	}
+	entry, err := s.manager.Get(dbName)
+	if err != nil {
+		return err
+	}
+	statement := fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s", quoteIdentifier(tableName), definition)
+	if _, err := entry.DB.Exec(statement); err != nil {
+		return fmt.Errorf("add column failed: %w", err)
+	}
+	return nil
 }
 
 func (s *DatabaseService) Query(_ context.Context, dbName, sqlStr string, params []string, limit, offset int) (*QueryResult, error) {
@@ -364,4 +462,56 @@ func stringsToInterfaces(strs []string) []interface{} {
 		result[i] = s
 	}
 	return result
+}
+
+func buildColumnDefinition(column ColumnDefinition, adding bool) (string, error) {
+	if err := validateIdentifier("column", column.Name); err != nil {
+		return "", err
+	}
+	columnType := strings.ToUpper(strings.TrimSpace(column.Type))
+	if _, ok := sqliteColumnTypes[columnType]; !ok {
+		return "", fmt.Errorf("unsupported column type %q", column.Type)
+	}
+
+	parts := []string{quoteIdentifier(column.Name), columnType}
+	if column.PrimaryKey {
+		parts = append(parts, "NOT NULL", "PRIMARY KEY")
+	} else if column.NotNull {
+		parts = append(parts, "NOT NULL")
+	}
+	if column.DefaultValue != nil {
+		parts = append(parts, "DEFAULT", quoteLiteral(*column.DefaultValue))
+	}
+	if adding && column.PrimaryKey {
+		return "", fmt.Errorf("primary key columns cannot be added to an existing table")
+	}
+	return strings.Join(parts, " "), nil
+}
+
+func validateIdentifier(kind, name string) error {
+	if err := validateExistingIdentifier(kind, name); err != nil {
+		return err
+	}
+	if strings.HasPrefix(strings.ToLower(name), "sqlite_") {
+		return fmt.Errorf("%s name cannot use the reserved sqlite_ prefix", kind)
+	}
+	return nil
+}
+
+func validateExistingIdentifier(kind, name string) error {
+	if strings.TrimSpace(name) == "" {
+		return fmt.Errorf("%s name cannot be empty", kind)
+	}
+	if strings.ContainsRune(name, '\x00') {
+		return fmt.Errorf("%s name contains an invalid null character", kind)
+	}
+	return nil
+}
+
+func quoteIdentifier(name string) string {
+	return `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
+}
+
+func quoteLiteral(value string) string {
+	return `'` + strings.ReplaceAll(value, `'`, `''`) + `'`
 }

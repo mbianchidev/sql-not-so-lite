@@ -45,6 +45,14 @@ export interface TableInfo {
   RowCount: number;
 }
 
+export interface ColumnDefinition {
+  Name: string;
+  Type: string;
+  NotNull: boolean;
+  PrimaryKey: boolean;
+  DefaultValue?: string;
+}
+
 export interface StatsInfo {
   version: string;
   uptime_seconds: number;
@@ -125,6 +133,21 @@ export const api = {
 
   getTables: (dbName: string) =>
     request<{ tables: string[] }>(`/api/databases/${dbName}/tables`),
+
+  createTable: (dbName: string, name: string, columns: ColumnDefinition[]) =>
+    request<{ success: boolean }>(`/api/databases/${encodeURIComponent(dbName)}/tables`, {
+      method: 'POST',
+      body: JSON.stringify({ Name: name, Columns: columns }),
+    }),
+
+  addColumn: (dbName: string, table: string, column: ColumnDefinition) =>
+    request<{ success: boolean }>(
+      `/api/databases/${encodeURIComponent(dbName)}/tables/${encodeURIComponent(table)}/columns`,
+      {
+      method: 'POST',
+      body: JSON.stringify(column),
+      },
+    ),
 
   getTableData: (dbName: string, table: string, limit = 100, offset = 0) =>
     request<QueryResult>(
