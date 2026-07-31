@@ -1,6 +1,7 @@
 package catalog
 
 import (
+	"crypto/sha256"
 	"database/sql"
 	"fmt"
 	"os"
@@ -254,6 +255,12 @@ func (c *Catalog) UpsertDiscovered(d *DiscoveredDB) (int64, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	name, err := c.availableDiscoveredName(d.Name, d.SourcePath)
+	if err != nil {
+		return 0, err
+	}
+	d.Name = name
+
 	now := time.Now().Format(time.RFC3339)
 	firstSeen := now
 	if !d.FirstSeen.IsZero() {
@@ -272,7 +279,7 @@ func (c *Catalog) UpsertDiscovered(d *DiscoveredDB) (int64, error) {
 		priority = "other"
 	}
 
-	_, err := c.db.Exec(`
+	_, err = c.db.Exec(`
 		INSERT INTO discovered_databases
 			(name, source_path, sqlite_version, page_size, journal_mode,
 			 size_bytes, last_modified, first_seen, last_scanned, status,
@@ -308,6 +315,45 @@ func (c *Catalog) UpsertDiscovered(d *DiscoveredDB) (int64, error) {
 		return 0, fmt.Errorf("catalog: upsert discovered (get id): %w", err)
 	}
 	return id, nil
+}
+
+func (c *Catalog) availableDiscoveredName(name, sourcePath string) (string, error) {
+	var currentName string
+	err := c.db.QueryRow(
+		`SELECT name FROM discovered_databases WHERE source_path = ?`,
+		sourcePath,
+	).Scan(&currentName)
+	switch {
+	case err == nil:
+		return currentName, nil
+	case err != sql.ErrNoRows:
+		return "", fmt.Errorf("catalog: check discovered path: %w", err)
+	}
+
+	candidate := name
+	var disambiguated string
+
+	for suffix := 0; ; suffix++ {
+		var existingPath string
+		err = c.db.QueryRow(
+			`SELECT source_path FROM discovered_databases WHERE name = ?`,
+			candidate,
+		).Scan(&existingPath)
+		switch {
+		case err == sql.ErrNoRows || existingPath == sourcePath:
+			return candidate, nil
+		case err != nil:
+			return "", fmt.Errorf("catalog: check discovered name: %w", err)
+		}
+
+		if disambiguated == "" {
+			hash := sha256.Sum256([]byte(sourcePath))
+			disambiguated = fmt.Sprintf("%s (%x)", name, hash[:4])
+			candidate = disambiguated
+			continue
+		}
+		candidate = fmt.Sprintf("%s-%d", disambiguated, suffix+1)
+	}
 }
 
 func (c *Catalog) GetDiscovered(id int64) (*DiscoveredDB, error) {

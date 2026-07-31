@@ -46,6 +46,8 @@ make all        # Build GUI + Go binary
 ./sqnsl start   # Start daemon (foreground)
 ```
 
+The default scan walks the full home directory recursively, including platform app-data locations such as `~/Library/Application Support`, `~/.config`, and `~/.local`.
+
 ### Install as service
 
 ```bash
@@ -61,6 +63,8 @@ make docker-up     # Start with docker compose
 # GUI at http://localhost:9147
 # gRPC at localhost:50051
 ```
+
+Docker only scans paths mounted into the container. Use the native binary for full desktop discovery, or mount host paths and set `SQNSL_SCAN_ROOT` to the mounted location.
 
 ## CLI Reference
 
@@ -125,6 +129,13 @@ snapshot_dir = "~/.sql-not-so-lite/snapshots"
 
 Run `sqnsl config init` to create the default config file.
 
+Environment variables override file settings when present:
+
+| Variable | Description |
+|----------|-------------|
+| `SQNSL_DATA_DIR` | Catalog and managed database directory |
+| `SQNSL_SCAN_ROOT` | Default recursive filesystem scan root |
+
 ## gRPC API
 
 Connect to `localhost:50051`. Proto definition: [`api/proto/sqnsl.proto`](api/proto/sqnsl.proto)
@@ -174,7 +185,7 @@ grpcurl -plaintext -d '{"database":"myapp","sql":"SELECT * FROM users","limit":1
 | POST | `/api/databases/:name/query` | Execute SQL `{"sql":"..."}` |
 | GET | `/api/health` | Health check |
 | GET | `/api/stats` | Memory, connections, uptime |
-| POST | `/api/scan` | Trigger filesystem scan |
+| POST | `/api/scan` | Scan the default root or `{"paths":["/absolute/path"]}` |
 | GET | `/api/discovered` | List discovered databases |
 | GET | `/api/discovered/:id` | Get discovered DB details |
 | POST | `/api/discovered/:id/replicate` | Start replication |

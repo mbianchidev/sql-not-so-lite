@@ -2,6 +2,7 @@ package catalog
 
 import (
 	"database/sql"
+	"strings"
 	"testing"
 	"time"
 )
@@ -131,6 +132,72 @@ func TestUpsertDiscoveredUpdate(t *testing.T) {
 	got, _ := cat.GetDiscovered(id1)
 	if got.SizeBytes != 200 {
 		t.Errorf("SizeBytes = %d after upsert, want 200", got.SizeBytes)
+	}
+}
+
+func TestUpsertDiscoveredDisambiguatesDuplicateNames(t *testing.T) {
+	cat := openTestCatalog(t)
+
+	firstID, err := cat.UpsertDiscovered(&DiscoveredDB{
+		Name:       "cache",
+		SourcePath: "/apps/one/cache.db",
+	})
+	if err != nil {
+		t.Fatalf("insert first database: %v", err)
+	}
+	secondID, err := cat.UpsertDiscovered(&DiscoveredDB{
+		Name:       "cache",
+		SourcePath: "/apps/two/cache.db",
+	})
+	if err != nil {
+		t.Fatalf("insert duplicate database name: %v", err)
+	}
+	if firstID == secondID {
+		t.Fatalf("expected distinct IDs, got %d", firstID)
+	}
+
+	first, err := cat.GetDiscovered(firstID)
+	if err != nil {
+		t.Fatalf("get first database: %v", err)
+	}
+	second, err := cat.GetDiscovered(secondID)
+	if err != nil {
+		t.Fatalf("get second database: %v", err)
+	}
+	if first.Name != "cache" {
+		t.Fatalf("first name = %q, want cache", first.Name)
+	}
+	if second.Name == "cache" || !strings.HasPrefix(second.Name, "cache (") {
+		t.Fatalf("second name = %q, want a disambiguated cache name", second.Name)
+	}
+
+	updatedID, err := cat.UpsertDiscovered(&DiscoveredDB{
+		Name:       "cache",
+		SourcePath: "/apps/two/cache.db",
+		SizeBytes:  42,
+	})
+	if err != nil {
+		t.Fatalf("update duplicate database: %v", err)
+	}
+	if updatedID != secondID {
+		t.Fatalf("updated ID = %d, want %d", updatedID, secondID)
+	}
+
+	if err := cat.DeleteDiscovered(firstID); err != nil {
+		t.Fatalf("delete first database: %v", err)
+	}
+	if _, err := cat.UpsertDiscovered(&DiscoveredDB{
+		Name:       "cache",
+		SourcePath: "/apps/two/cache.db",
+	}); err != nil {
+		t.Fatalf("rescan duplicate database: %v", err)
+	}
+	rescanned, err := cat.GetDiscovered(secondID)
+	if err != nil {
+		t.Fatalf("get rescanned database: %v", err)
+	}
+	if rescanned.Name != second.Name {
+		t.Fatalf("rescanned name = %q, want stable name %q", rescanned.Name, second.Name)
 	}
 }
 

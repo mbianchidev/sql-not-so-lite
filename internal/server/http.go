@@ -6,6 +6,7 @@ import (
 	"embed"
 	"encoding/json"
 	"fmt"
+	"io"
 	"io/fs"
 	"log"
 	"net/http"
@@ -71,7 +72,7 @@ func (s *HTTPServer) Start() error {
 		Addr:         fmt.Sprintf(":%d", s.port),
 		Handler:      mux,
 		ReadTimeout:  30 * time.Second,
-		WriteTimeout: 30 * time.Second,
+		WriteTimeout: 5 * time.Minute,
 		IdleTimeout:  120 * time.Second,
 	}
 
@@ -337,11 +338,50 @@ func (s *HTTPServer) handleScan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sc := scanner.New(s.cfg.Scanner, s.cfg.Server.DataDir)
-	files, err := sc.Scan()
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, fmt.Sprintf("scan failed: %v", err))
+	var req struct {
+		Paths []string `json:"paths"`
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 64*1024)
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil && err != io.EOF {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid scan request: %v", err))
 		return
+	}
+
+	roots := req.Paths
+	if len(roots) == 0 {
+		roots = []string{s.cfg.Scanner.ScanRoot}
+	}
+
+	files := make([]scanner.DiscoveredFile, 0)
+	seenRoots := make(map[string]struct{}, len(roots))
+	seenFiles := make(map[string]struct{})
+	for _, requestedRoot := range roots {
+		root, err := resolveScanPath(requestedRoot, s.cfg.Scanner.ScanRoot)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if _, seen := seenRoots[root]; seen {
+			continue
+		}
+		seenRoots[root] = struct{}{}
+
+		scanCfg := s.cfg.Scanner
+		scanCfg.ScanRoot = root
+		rootFiles, err := scanner.New(scanCfg, s.cfg.Server.DataDir).Scan()
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, fmt.Sprintf("scan failed for %s: %v", root, err))
+			return
+		}
+		for _, file := range rootFiles {
+			if _, seen := seenFiles[file.Path]; seen {
+				continue
+			}
+			seenFiles[file.Path] = struct{}{}
+			files = append(files, file)
+		}
 	}
 
 	results := make([]map[string]interface{}, 0, len(files))
@@ -373,7 +413,7 @@ func (s *HTTPServer) handleScan(w http.ResponseWriter, r *http.Request) {
 		}
 		results = append(results, map[string]interface{}{
 			"id":             id,
-			"name":           f.Name,
+			"name":           d.Name,
 			"source_path":    f.Path,
 			"size_bytes":     f.SizeBytes,
 			"sqlite_version": f.SQLiteVersion,
@@ -386,6 +426,36 @@ func (s *HTTPServer) handleScan(w http.ResponseWriter, r *http.Request) {
 		"scanned": len(results),
 		"files":   results,
 	})
+}
+
+func resolveScanPath(path, configuredRoot string) (string, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return "", fmt.Errorf("scan path cannot be empty")
+	}
+
+	configuredRoot = filepath.Clean(configuredRoot)
+	switch {
+	case path == "~" || path == "$HOME":
+		path = configuredRoot
+	case strings.HasPrefix(path, "~/"):
+		path = filepath.Join(configuredRoot, strings.TrimPrefix(path, "~/"))
+	case strings.HasPrefix(path, "$HOME/"):
+		path = filepath.Join(configuredRoot, strings.TrimPrefix(path, "$HOME/"))
+	}
+
+	if !filepath.IsAbs(path) {
+		return "", fmt.Errorf("scan path must be absolute: %s", path)
+	}
+	path = filepath.Clean(path)
+	resolvedPath, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return "", fmt.Errorf("scan path is not accessible: %s: %v", path, err)
+	}
+	if _, err := os.Stat(resolvedPath); err != nil {
+		return "", fmt.Errorf("scan path is not accessible: %s: %v", resolvedPath, err)
+	}
+	return resolvedPath, nil
 }
 
 func (s *HTTPServer) handleDiscovered(w http.ResponseWriter, r *http.Request) {

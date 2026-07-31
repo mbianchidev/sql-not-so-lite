@@ -49,6 +49,9 @@ func (s *Scanner) Scan() ([]DiscoveredFile, error) {
 
 	err := filepath.WalkDir(s.cfg.ScanRoot, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
+			if path == s.cfg.ScanRoot {
+				return err
+			}
 			// Skip unreadable directories gracefully
 			if d != nil && d.IsDir() {
 				return fs.SkipDir
@@ -371,7 +374,7 @@ func matchesDotdirPattern(path string, pattern string) bool {
 		return false
 	}
 
-	prefix := pattern[:idx]  // e.g. "/home/user/."
+	prefix := pattern[:idx]      // e.g. "/home/user/."
 	suffix := pattern[endIdx+1:] // e.g. "/data"
 
 	if !strings.HasPrefix(path, prefix) {
