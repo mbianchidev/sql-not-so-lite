@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/BurntSushi/toml"
 )
@@ -59,6 +60,24 @@ type ReplicatorConfig struct {
 	SnapshotDir       string `toml:"snapshot_dir"`
 }
 
+func defaultScannerConfig(homeDir string) ScannerConfig {
+	return ScannerConfig{
+		ScanRoot:               homeDir,
+		FileExtensions:         []string{".sqlite", ".db", ".sqlite3", ".sqlitedb"},
+		ExcludePatterns:        []string{"node_modules", ".git/objects", "*.tmp"},
+		PriorityPathsDocker:    []string{filepath.Join(homeDir, ".orbstack"), filepath.Join(homeDir, ".docker"), "/var/lib/docker/volumes"},
+		PriorityPathsWorkspace: []string{filepath.Join(homeDir, "workspace"), filepath.Join(homeDir, "projects")},
+		PriorityPathsCopilot:   []string{filepath.Join(homeDir, ".copilot")},
+		PriorityPathsAppData: []string{
+			filepath.Join(homeDir, "Library", "Application Support"),
+			filepath.Join(homeDir, ".config"),
+			filepath.Join(homeDir, ".local"),
+		},
+		AppDataDotdirPattern: filepath.Join(homeDir, ".{repo-name}", "data"),
+		ScanInterval:         "1h",
+	}
+}
+
 func DefaultConfig() *Config {
 	homeDir, _ := os.UserHomeDir()
 	baseDir := filepath.Join(homeDir, ".sql-not-so-lite")
@@ -82,17 +101,7 @@ func DefaultConfig() *Config {
 			Level: "info",
 			File:  filepath.Join(baseDir, "sqnsl.log"),
 		},
-		Scanner: ScannerConfig{
-			ScanRoot:               homeDir,
-			FileExtensions:         []string{".sqlite", ".db", ".sqlite3", ".sqlitedb"},
-			ExcludePatterns:        []string{"node_modules", ".git/objects", "*.tmp"},
-			PriorityPathsDocker:    []string{filepath.Join(homeDir, ".orbstack"), filepath.Join(homeDir, ".docker"), "/var/lib/docker/volumes"},
-			PriorityPathsWorkspace: []string{filepath.Join(homeDir, "workspace")},
-			PriorityPathsCopilot:   []string{filepath.Join(homeDir, ".copilot")},
-			PriorityPathsAppData:   []string{filepath.Join(homeDir, "Library", "Application Support")},
-			AppDataDotdirPattern:   filepath.Join(homeDir, ".{repo-name}", "data"),
-			ScanInterval:           "1h",
-		},
+		Scanner: defaultScannerConfig(homeDir),
 		Replicator: ReplicatorConfig{
 			Enabled:           true,
 			SyncInterval:      "5s",
@@ -112,19 +121,36 @@ func Load() (*Config, error) {
 	cfg := DefaultConfig()
 	path := ConfigPath()
 
-	if _, err := os.Stat(path); os.IsNotExist(err) {
-		return cfg, nil
-	}
-
-	if _, err := toml.DecodeFile(path, cfg); err != nil {
-		return nil, fmt.Errorf("failed to load config from %s: %w", path, err)
+	if _, err := os.Stat(path); err == nil {
+		if _, err := toml.DecodeFile(path, cfg); err != nil {
+			return nil, fmt.Errorf("failed to load config from %s: %w", path, err)
+		}
+	} else if !os.IsNotExist(err) {
+		return nil, fmt.Errorf("failed to inspect config %s: %w", path, err)
 	}
 
 	if cfg.Server.DataDir == "" {
 		cfg.Server.DataDir = DefaultConfig().Server.DataDir
 	}
 
+	applyEnvironmentOverrides(cfg)
 	return cfg, nil
+}
+
+func applyEnvironmentOverrides(cfg *Config) {
+	if dataDir := strings.TrimSpace(os.Getenv("SQNSL_DATA_DIR")); dataDir != "" {
+		cfg.Server.DataDir = filepath.Clean(dataDir)
+	}
+
+	if scanRoot := strings.TrimSpace(os.Getenv("SQNSL_SCAN_ROOT")); scanRoot != "" {
+		defaults := defaultScannerConfig(filepath.Clean(scanRoot))
+		cfg.Scanner.ScanRoot = defaults.ScanRoot
+		cfg.Scanner.PriorityPathsDocker = defaults.PriorityPathsDocker
+		cfg.Scanner.PriorityPathsWorkspace = defaults.PriorityPathsWorkspace
+		cfg.Scanner.PriorityPathsCopilot = defaults.PriorityPathsCopilot
+		cfg.Scanner.PriorityPathsAppData = defaults.PriorityPathsAppData
+		cfg.Scanner.AppDataDotdirPattern = defaults.AppDataDotdirPattern
+	}
 }
 
 func (c *Config) EnsureDirs() error {

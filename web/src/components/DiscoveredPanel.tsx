@@ -45,6 +45,7 @@ export function DiscoveredPanel({ selectedId, onSelect }: Props) {
   const [loading, setLoading] = useState(false);
   const [scanning, setScanning] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [scanMessage, setScanMessage] = useState<string | null>(null);
   const [actionLoading, setActionLoading] = useState<number | null>(null);
   const [scanPath, setScanPath] = useState('');
   const [showScanInput, setShowScanInput] = useState(false);
@@ -64,14 +65,20 @@ export function DiscoveredPanel({ selectedId, onSelect }: Props) {
 
   useEffect(() => { refresh(); }, [refresh]);
 
-  const handleScan = async (paths?: string[]) => {
+  const handleScan = async (paths?: string[]): Promise<boolean> => {
     try {
       setScanning(true);
       setError(null);
-      const dbs = await api.scanDatabases(paths);
-      setDatabases(dbs || []);
+      setScanMessage(null);
+      const result = await api.scanDatabases(paths);
+      await refresh();
+      setScanMessage(
+        `Scan complete: ${result.scanned} database${result.scanned === 1 ? '' : 's'} found.`
+      );
+      return true;
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Scan failed');
+      return false;
     } finally {
       setScanning(false);
     }
@@ -80,9 +87,10 @@ export function DiscoveredPanel({ selectedId, onSelect }: Props) {
   const handleScanPath = async () => {
     const trimmed = scanPath.trim();
     if (!trimmed) return;
-    await handleScan([trimmed]);
-    setScanPath('');
-    setShowScanInput(false);
+    if (await handleScan([trimmed])) {
+      setScanPath('');
+      setShowScanInput(false);
+    }
   };
 
   const handleReplicate = async (id: number) => {
@@ -174,6 +182,7 @@ export function DiscoveredPanel({ selectedId, onSelect }: Props) {
       )}
 
       {error && <div className="error-msg">{error}</div>}
+      {scanMessage && <div className="scan-result">{scanMessage}</div>}
       {loading && <div className="loading">Loading…</div>}
 
       <div className="discovered-list">
@@ -260,7 +269,7 @@ export function DiscoveredPanel({ selectedId, onSelect }: Props) {
             </div>
           </div>
         ))}
-        {!loading && databases.length === 0 && (
+        {!loading && databases.length === 0 && !scanMessage && (
           <div className="discovered-empty">
             No databases discovered yet. Click <strong>Scan</strong> to search.
           </div>
