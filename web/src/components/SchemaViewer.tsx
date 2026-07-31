@@ -1,18 +1,90 @@
-import type { TableInfo } from '../api/client';
+import { useState } from 'react';
+import { api, type ColumnDefinition, type TableInfo } from '../api/client';
 
 interface Props {
+  dbName: string;
   tables: TableInfo[];
   selectedTable: string | null;
   onSelectTable: (name: string) => void;
+  onSchemaChange: () => Promise<void>;
 }
 
-export function SchemaViewer({ tables, selectedTable, onSelectTable }: Props) {
+const columnTypes = ['INTEGER', 'TEXT', 'REAL', 'NUMERIC', 'BOOLEAN', 'DATE', 'DATETIME', 'BLOB'];
+
+const emptyColumn = (): ColumnDefinition => ({
+  Name: '',
+  Type: 'TEXT',
+  NotNull: false,
+  PrimaryKey: false,
+});
+
+export function SchemaViewer({ dbName, tables, selectedTable, onSelectTable, onSchemaChange }: Props) {
   const selected = tables.find((t) => t.Name === selectedTable);
+  const [newTableName, setNewTableName] = useState('');
+  const [tableColumn, setTableColumn] = useState<ColumnDefinition>(emptyColumn);
+  const [newColumn, setNewColumn] = useState<ColumnDefinition>(emptyColumn);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const save = async (action: () => Promise<unknown>, afterSave: () => void) => {
+    setSaving(true);
+    setError(null);
+    try {
+      await action();
+      await onSchemaChange();
+      afterSave();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Schema update failed');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleCreateTable = () => {
+    const tableName = newTableName.trim();
+    const column = { ...tableColumn, Name: tableColumn.Name.trim() };
+    if (!tableName || !column.Name) return;
+    void save(
+      () => api.createTable(dbName, tableName, [column]),
+      () => {
+        setNewTableName('');
+        setTableColumn(emptyColumn());
+        onSelectTable(tableName);
+      },
+    );
+  };
+
+  const handleAddColumn = () => {
+    if (!selected) return;
+    const column = { ...newColumn, Name: newColumn.Name.trim() };
+    if (!column.Name) return;
+    void save(
+      () => api.addColumn(dbName, selected.Name, column),
+      () => setNewColumn(emptyColumn()),
+    );
+  };
 
   return (
     <div className="schema-viewer">
       <div className="schema-tables">
         <h3>Tables</h3>
+        <div className="schema-form">
+          <input
+            value={newTableName}
+            onChange={(event) => setNewTableName(event.target.value)}
+            placeholder="Table name"
+            disabled={saving}
+          />
+          <ColumnForm value={tableColumn} onChange={setTableColumn} allowPrimaryKey disabled={saving} />
+          <button
+            className="btn-primary"
+            onClick={handleCreateTable}
+            disabled={saving || !newTableName.trim() || !tableColumn.Name.trim()}
+          >
+            Create table
+          </button>
+        </div>
+        {error && <div className="error-msg">{error}</div>}
         <ul className="table-list">
           {tables.map((t) => (
             <li
@@ -37,6 +109,16 @@ export function SchemaViewer({ tables, selectedTable, onSelectTable }: Props) {
 
           <div className="schema-section">
             <h4>Columns</h4>
+            <div className="schema-form schema-form-inline">
+              <ColumnForm value={newColumn} onChange={setNewColumn} disabled={saving} />
+              <button
+                className="btn-sm"
+                onClick={handleAddColumn}
+                disabled={saving || !newColumn.Name.trim()}
+              >
+                Add field
+              </button>
+            </div>
             <table className="schema-table">
               <thead>
                 <tr>
@@ -85,6 +167,57 @@ export function SchemaViewer({ tables, selectedTable, onSelectTable }: Props) {
             </div>
           )}
         </div>
+      )}
+    </div>
+  );
+}
+
+interface ColumnFormProps {
+  value: ColumnDefinition;
+  onChange: (value: ColumnDefinition) => void;
+  allowPrimaryKey?: boolean;
+  disabled: boolean;
+}
+
+function ColumnForm({ value, onChange, allowPrimaryKey = false, disabled }: ColumnFormProps) {
+  const set = (changes: Partial<ColumnDefinition>) => onChange({ ...value, ...changes });
+
+  return (
+    <div className="column-form">
+      <input
+        value={value.Name}
+        onChange={(event) => set({ Name: event.target.value })}
+        placeholder="Field name"
+        disabled={disabled}
+      />
+      <select value={value.Type} onChange={(event) => set({ Type: event.target.value })} disabled={disabled}>
+        {columnTypes.map((type) => <option key={type}>{type}</option>)}
+      </select>
+      <input
+        value={value.DefaultValue ?? ''}
+        onChange={(event) => set({ DefaultValue: event.target.value === '' ? undefined : event.target.value })}
+        placeholder="Default (optional)"
+        disabled={disabled}
+      />
+      <label>
+        <input
+          type="checkbox"
+          checked={value.NotNull}
+          onChange={(event) => set({ NotNull: event.target.checked })}
+          disabled={disabled || value.PrimaryKey}
+        />
+        Not null
+      </label>
+      {allowPrimaryKey && (
+        <label>
+          <input
+            type="checkbox"
+            checked={value.PrimaryKey}
+            onChange={(event) => set({ PrimaryKey: event.target.checked, NotNull: event.target.checked || value.NotNull })}
+            disabled={disabled}
+          />
+          Primary key
+        </label>
       )}
     </div>
   );
