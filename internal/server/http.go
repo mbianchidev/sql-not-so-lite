@@ -142,6 +142,15 @@ func (s *HTTPServer) handleDatabases(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
+		if err := s.registerCreatedDatabase(info); err != nil {
+			rollbackErr := s.svc.DropDatabase(r.Context(), info.Name)
+			if rollbackErr != nil {
+				writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to register database in catalog: %v; rollback failed: %v", err, rollbackErr))
+				return
+			}
+			writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to register database in catalog: %v", err))
+			return
+		}
 		writeJSON(w, http.StatusCreated, info)
 
 	default:
@@ -150,9 +159,9 @@ func (s *HTTPServer) handleDatabases(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *HTTPServer) handleDatabase(w http.ResponseWriter, r *http.Request) {
-	// Parse path: /api/databases/{name}[/schema|/tables[/{table}]|/query]
+	// Parse path: /api/databases/{name}[/schema|/tables[/{table}[/columns]]|/query]
 	path := strings.TrimPrefix(r.URL.Path, "/api/databases/")
-	parts := strings.SplitN(path, "/", 3)
+	parts := strings.SplitN(path, "/", 4)
 	dbName := parts[0]
 
 	if dbName == "" {
@@ -173,6 +182,14 @@ func (s *HTTPServer) handleDatabase(w http.ResponseWriter, r *http.Request) {
 		if len(parts) > 2 {
 			tableName = parts[2]
 		}
+		if len(parts) == 4 {
+			if parts[3] != "columns" {
+				writeError(w, http.StatusNotFound, "not found")
+				return
+			}
+			s.handleColumns(w, r, dbName, tableName)
+			return
+		}
 		s.handleTables(w, r, dbName, tableName)
 	case "query":
 		s.handleQuery(w, r, dbName)
@@ -192,8 +209,17 @@ func (s *HTTPServer) handleDatabaseCRUD(w http.ResponseWriter, r *http.Request, 
 		writeJSON(w, http.StatusOK, info)
 
 	case http.MethodDelete:
+		info, err := s.svc.GetDatabaseInfo(r.Context(), dbName)
+		if err != nil {
+			writeError(w, http.StatusNotFound, err.Error())
+			return
+		}
 		if err := s.svc.DropDatabase(r.Context(), dbName); err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if err := s.catalog.DeleteDiscoveredByPath(info.Path); err != nil {
+			writeError(w, http.StatusInternalServerError, fmt.Sprintf("database dropped but catalog cleanup failed: %v", err))
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]bool{"success": true})
@@ -218,6 +244,19 @@ func (s *HTTPServer) handleSchema(w http.ResponseWriter, r *http.Request, dbName
 }
 
 func (s *HTTPServer) handleTables(w http.ResponseWriter, r *http.Request, dbName, tableName string) {
+	if r.Method == http.MethodPost && tableName == "" {
+		var req service.CreateTableRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid request body")
+			return
+		}
+		if err := s.svc.CreateTable(r.Context(), dbName, req); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusCreated, map[string]bool{"success": true})
+		return
+	}
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
@@ -258,6 +297,70 @@ func (s *HTTPServer) handleTables(w http.ResponseWriter, r *http.Request, dbName
 		return
 	}
 	writeJSON(w, http.StatusOK, result)
+}
+
+func (s *HTTPServer) handleColumns(w http.ResponseWriter, r *http.Request, dbName, tableName string) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	if tableName == "" {
+		writeError(w, http.StatusBadRequest, "table name required")
+		return
+	}
+
+	var column service.ColumnDefinition
+	if err := json.NewDecoder(r.Body).Decode(&column); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if err := s.svc.AddColumn(r.Context(), dbName, tableName, column); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]bool{"success": true})
+}
+
+func (s *HTTPServer) registerCreatedDatabase(info *service.DBInfo) error {
+	fileInfo, err := os.Stat(info.Path)
+	if err != nil {
+		return fmt.Errorf("read database file: %w", err)
+	}
+	catalogName, err := s.availableCatalogName(info.Name, info.Path)
+	if err != nil {
+		return err
+	}
+	sqliteVersion, pageSize, _ := scanner.ReadSQLiteHeader(info.Path)
+	_, err = s.catalog.UpsertDiscovered(&catalog.DiscoveredDB{
+		Name:          catalogName,
+		SourcePath:    info.Path,
+		SQLiteVersion: sqliteVersion,
+		PageSize:      pageSize,
+		JournalMode:   scanner.DetectJournalMode(info.Path),
+		SizeBytes:     fileInfo.Size(),
+		LastModified:  fileInfo.ModTime(),
+		Status:        "discovered",
+		Priority:      "app_data",
+	})
+	return err
+}
+
+func (s *HTTPServer) availableCatalogName(name, path string) (string, error) {
+	for suffix := 1; ; suffix++ {
+		candidate := name
+		if suffix > 1 {
+			candidate = fmt.Sprintf("%s (%d)", name, suffix)
+		}
+		existing, err := s.catalog.GetDiscoveredByName(candidate)
+		switch {
+		case err == sql.ErrNoRows:
+			return candidate, nil
+		case err != nil:
+			return "", fmt.Errorf("check catalog name: %w", err)
+		case existing.SourcePath == path:
+			return candidate, nil
+		}
+	}
 }
 
 func (s *HTTPServer) handleQuery(w http.ResponseWriter, r *http.Request, dbName string) {

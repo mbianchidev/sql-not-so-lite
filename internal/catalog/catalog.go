@@ -279,7 +279,8 @@ func (c *Catalog) UpsertDiscovered(d *DiscoveredDB) (int64, error) {
 		priority = "other"
 	}
 
-	_, err = c.db.Exec(`
+	var id int64
+	err = c.db.QueryRow(`
 		INSERT INTO discovered_databases
 			(name, source_path, sqlite_version, page_size, journal_mode,
 			 size_bytes, last_modified, first_seen, last_scanned, status,
@@ -297,22 +298,17 @@ func (c *Catalog) UpsertDiscovered(d *DiscoveredDB) (int64, error) {
 			error_message  = excluded.error_message,
 			github_repo    = excluded.github_repo,
 			github_url     = excluded.github_url,
-			priority       = excluded.priority`,
+			priority       = excluded.priority
+		RETURNING id`,
 		d.Name, d.SourcePath,
 		nullStr(d.SQLiteVersion), nullInt(d.PageSize), nullStr(d.JournalMode),
 		d.SizeBytes, nullTimeStr(d.LastModified),
 		firstSeen, lastScanned,
 		status, nullStr(d.ErrorMessage),
 		nullStr(d.GitHubRepo), nullStr(d.GitHubURL), priority,
-	)
+	).Scan(&id)
 	if err != nil {
 		return 0, fmt.Errorf("catalog: upsert discovered: %w", err)
-	}
-
-	var id int64
-	err = c.db.QueryRow(`SELECT id FROM discovered_databases WHERE source_path = ?`, d.SourcePath).Scan(&id)
-	if err != nil {
-		return 0, fmt.Errorf("catalog: upsert discovered (get id): %w", err)
 	}
 	return id, nil
 }
@@ -414,6 +410,13 @@ func (c *Catalog) DeleteDiscovered(id int64) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	_, err := c.db.Exec(`DELETE FROM discovered_databases WHERE id = ?`, id)
+	return err
+}
+
+func (c *Catalog) DeleteDiscoveredByPath(path string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	_, err := c.db.Exec(`DELETE FROM discovered_databases WHERE source_path = ?`, path)
 	return err
 }
 

@@ -135,6 +135,97 @@ func TestGetSchema(t *testing.T) {
 	}
 }
 
+func TestCreateTableAndAddColumn(t *testing.T) {
+	svc := setupTestService(t)
+	ctx := context.Background()
+
+	if _, err := svc.CreateDatabase(ctx, "builder"); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.CreateTable(ctx, "builder", CreateTableRequest{
+		Name: "users",
+		Columns: []ColumnDefinition{
+			{Name: "id", Type: "INTEGER", PrimaryKey: true},
+			{Name: "name", Type: "TEXT", NotNull: true},
+		},
+	}); err != nil {
+		t.Fatalf("CreateTable failed: %v", err)
+	}
+
+	defaultValue := "active"
+	if err := svc.AddColumn(ctx, "builder", "users", ColumnDefinition{
+		Name:         "status",
+		Type:         "TEXT",
+		NotNull:      true,
+		DefaultValue: &defaultValue,
+	}); err != nil {
+		t.Fatalf("AddColumn failed: %v", err)
+	}
+
+	tables, err := svc.GetSchema(ctx, "builder")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tables) != 1 || len(tables[0].Columns) != 3 {
+		t.Fatalf("unexpected schema: %+v", tables)
+	}
+	if tables[0].Columns[2].Name != "status" || tables[0].Columns[2].Nullable {
+		t.Errorf("unexpected added column: %+v", tables[0].Columns[2])
+	}
+	if tables[0].Columns[0].Nullable {
+		t.Errorf("primary key column should be NOT NULL: %+v", tables[0].Columns[0])
+	}
+
+	if _, err := svc.Execute(ctx, "builder", `CREATE TABLE "user-data" (id INTEGER)`, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.AddColumn(ctx, "builder", "user-data", ColumnDefinition{Name: "email-address", Type: "TEXT"}); err != nil {
+		t.Fatalf("AddColumn with quoted identifiers failed: %v", err)
+	}
+}
+
+func TestSchemaMutationValidation(t *testing.T) {
+	svc := setupTestService(t)
+	ctx := context.Background()
+	if _, err := svc.CreateDatabase(ctx, "validation"); err != nil {
+		t.Fatal(err)
+	}
+
+	err := svc.CreateTable(ctx, "validation", CreateTableRequest{
+		Name:    "sqlite_internal",
+		Columns: []ColumnDefinition{{Name: "id", Type: "INTEGER"}},
+	})
+	if err == nil {
+		t.Fatal("expected reserved table name error")
+	}
+
+	err = svc.CreateTable(ctx, "validation", CreateTableRequest{
+		Name: "users",
+		Columns: []ColumnDefinition{
+			{Name: "id", Type: "INTEGER", PrimaryKey: true},
+			{Name: "other_id", Type: "INTEGER", PrimaryKey: true},
+		},
+	})
+	if err == nil {
+		t.Fatal("expected multiple primary key error")
+	}
+
+	if err := svc.CreateTable(ctx, "validation", CreateTableRequest{
+		Name:    "users",
+		Columns: []ColumnDefinition{{Name: "id", Type: "INTEGER", PrimaryKey: true}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	err = svc.AddColumn(ctx, "validation", "users", ColumnDefinition{
+		Name:    "email",
+		Type:    "TEXT",
+		NotNull: true,
+	})
+	if err == nil {
+		t.Fatal("expected missing default error")
+	}
+}
+
 func TestDropDatabase(t *testing.T) {
 	svc := setupTestService(t)
 	ctx := context.Background()

@@ -219,6 +219,18 @@ func TestGetDiscoveredByPath(t *testing.T) {
 	}
 }
 
+func TestDeleteDiscoveredByPath(t *testing.T) {
+	cat := openTestCatalog(t)
+	insertTestDB(t, cat, "deleted", "/delete/me.sqlite")
+
+	if err := cat.DeleteDiscoveredByPath("/delete/me.sqlite"); err != nil {
+		t.Fatalf("DeleteDiscoveredByPath: %v", err)
+	}
+	if _, err := cat.GetDiscoveredByPath("/delete/me.sqlite"); err != sql.ErrNoRows {
+		t.Fatalf("expected ErrNoRows, got %v", err)
+	}
+}
+
 func TestGetDiscoveredByName(t *testing.T) {
 	cat := openTestCatalog(t)
 	insertTestDB(t, cat, "namedb", "/name/db.sqlite")
