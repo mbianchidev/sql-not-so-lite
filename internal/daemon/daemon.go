@@ -15,6 +15,7 @@ import (
 	"github.com/mbianchidev/sql-not-so-lite/internal/catalog"
 	"github.com/mbianchidev/sql-not-so-lite/internal/config"
 	"github.com/mbianchidev/sql-not-so-lite/internal/idle"
+	"github.com/mbianchidev/sql-not-so-lite/internal/replicator"
 	"github.com/mbianchidev/sql-not-so-lite/internal/server"
 	"github.com/mbianchidev/sql-not-so-lite/internal/service"
 	"github.com/mbianchidev/sql-not-so-lite/internal/store"
@@ -31,6 +32,9 @@ type Daemon struct {
 	scanInterval time.Duration
 	scanCancel   context.CancelFunc
 	scanDone     chan struct{}
+	replInterval time.Duration
+	replCancel   context.CancelFunc
+	replDone     chan struct{}
 }
 
 func New(cfg *config.Config) (*Daemon, error) {
@@ -56,6 +60,7 @@ func New(cfg *config.Config) (*Daemon, error) {
 
 	tracker := idle.NewTracker(manager, connTimeout, checkInterval)
 	scanInterval := parseScanInterval(cfg.Scanner.ScanInterval)
+	replInterval := parseReplicationInterval(cfg.Replicator.SyncInterval)
 
 	cat, err := catalog.Open(cfg.Server.DataDir)
 	if err != nil {
@@ -71,6 +76,7 @@ func New(cfg *config.Config) (*Daemon, error) {
 		idleTracker:  tracker,
 		catalog:      cat,
 		scanInterval: scanInterval,
+		replInterval: replInterval,
 	}, nil
 }
 
@@ -86,6 +92,9 @@ func (d *Daemon) Run() error {
 	log.Printf("  HTTP port: %d", d.cfg.Server.HTTPPort)
 	log.Printf("  catalog:   %s/catalog.sqlite", d.cfg.Server.DataDir)
 	log.Printf("  scan interval: %s", d.scanInterval)
+	if d.cfg.Replicator.Enabled {
+		log.Printf("  replication interval: %s", d.replInterval)
+	}
 
 	d.idleTracker.Start()
 	scanCtx, scanCancel := context.WithCancel(context.Background())
@@ -101,6 +110,15 @@ func (d *Daemon) Run() error {
 			return result.Scanned, nil
 		})
 	}()
+	if d.cfg.Replicator.Enabled {
+		replCtx, replCancel := context.WithCancel(context.Background())
+		d.replCancel = replCancel
+		d.replDone = make(chan struct{})
+		go func() {
+			defer close(d.replDone)
+			runPeriodicReplicator(replCtx, d.replInterval, d.syncReplications)
+		}()
+	}
 
 	errCh := make(chan error, 2)
 
@@ -136,6 +154,10 @@ func (d *Daemon) Shutdown() error {
 		d.scanCancel()
 		<-d.scanDone
 	}
+	if d.replCancel != nil {
+		d.replCancel()
+		<-d.replDone
+	}
 	d.idleTracker.Stop()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -168,6 +190,20 @@ func parseScanInterval(value string) time.Duration {
 	return fallback
 }
 
+func parseReplicationInterval(value string) time.Duration {
+	interval, err := time.ParseDuration(value)
+	if err == nil && interval > 0 {
+		return interval
+	}
+	fallback, _ := time.ParseDuration(config.DefaultReplicationInterval)
+	log.Printf(
+		"Warning: invalid replicator.sync_interval %q; using %s",
+		value,
+		config.DefaultReplicationInterval,
+	)
+	return fallback
+}
+
 func runPeriodicScanner(
 	ctx context.Context,
 	interval time.Duration,
@@ -195,6 +231,127 @@ func runPeriodicScanner(
 			}
 		}
 	}
+}
+
+func runPeriodicReplicator(
+	ctx context.Context,
+	interval time.Duration,
+	syncDatabases func(context.Context) (int, error),
+) {
+	run := func() {
+		count, err := syncDatabases(ctx)
+		if err != nil {
+			log.Printf("Scheduled replication sync completed with errors: %v", err)
+			return
+		}
+		if count > 0 {
+			log.Printf("Scheduled replication sync complete: %d database(s)", count)
+		}
+	}
+	run()
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if ctx.Err() != nil {
+				return
+			}
+			run()
+		}
+	}
+}
+
+func (d *Daemon) syncReplications(ctx context.Context) (int, error) {
+	databases, err := d.catalog.ListDiscoveredByStatus("replicating")
+	if err != nil {
+		return 0, err
+	}
+
+	synced := 0
+	var syncErrors []error
+	for i := range databases {
+		if err := ctx.Err(); err != nil {
+			return synced, err
+		}
+		current, err := d.catalog.GetDiscovered(databases[i].ID)
+		if err != nil {
+			syncErrors = append(syncErrors, fmt.Errorf("database %d: %w", databases[i].ID, err))
+			continue
+		}
+		if current.Status != "replicating" {
+			continue
+		}
+		state, err := d.catalog.GetReplicationState(current.ID)
+		if err != nil {
+			syncErr := fmt.Errorf("load replication state for %q: %w", current.Name, err)
+			syncErrors = append(syncErrors, syncErr)
+			if statusErr := d.catalog.UpdateStatus(current.ID, "error", syncErr.Error()); statusErr != nil {
+				syncErrors = append(syncErrors, statusErr)
+			}
+			continue
+		}
+		replicaName := state.ReplicaName
+		if filepath.Ext(replicaName) == "" {
+			replicaName += ".sqlite"
+		}
+		replicaPath := filepath.Join(d.cfg.Replicator.ReplicaDir, replicaName)
+		sourceChanged, err := replicationSourceChanged(current.SourcePath, state.LastSync)
+		if err != nil {
+			syncErr := fmt.Errorf("check replication source %q: %w", current.Name, err)
+			syncErrors = append(syncErrors, syncErr)
+			if statusErr := d.catalog.UpdateStatus(current.ID, "replicating", syncErr.Error()); statusErr != nil {
+				syncErrors = append(syncErrors, statusErr)
+			}
+			continue
+		}
+		if !sourceChanged {
+			continue
+		}
+		changed, err := replicator.DifferentialSyncContext(ctx, current.SourcePath, replicaPath)
+		if err != nil {
+			syncErr := fmt.Errorf("sync replication for %q: %w", current.Name, err)
+			syncErrors = append(syncErrors, syncErr)
+			if statusErr := d.catalog.UpdateStatus(current.ID, "replicating", syncErr.Error()); statusErr != nil {
+				syncErrors = append(syncErrors, statusErr)
+			}
+			continue
+		}
+		state.LastSync = time.Now()
+		state.SyncMode = "differential"
+		if err := d.catalog.SetReplicationState(state); err != nil {
+			syncErrors = append(syncErrors, fmt.Errorf("update replication state for %q: %w", current.Name, err))
+			continue
+		}
+		if err := d.catalog.UpdateStatus(current.ID, "replicating", ""); err != nil {
+			syncErrors = append(syncErrors, fmt.Errorf("clear replication error for %q: %w", current.Name, err))
+			continue
+		}
+		log.Printf("Replication sync %q: %d changed table(s)", current.Name, len(changed))
+		synced++
+	}
+	return synced, errors.Join(syncErrors...)
+}
+
+func replicationSourceChanged(sourcePath string, lastSync time.Time) (bool, error) {
+	if lastSync.IsZero() {
+		return true, nil
+	}
+	for _, path := range []string{sourcePath, sourcePath + "-wal"} {
+		info, err := os.Stat(path)
+		switch {
+		case err == nil && info.ModTime().After(lastSync):
+			return true, nil
+		case err == nil:
+		case errors.Is(err, os.ErrNotExist) && path != sourcePath:
+		case err != nil:
+			return false, err
+		}
+	}
+	return false, nil
 }
 
 func (d *Daemon) Catalog() *catalog.Catalog { return d.catalog }

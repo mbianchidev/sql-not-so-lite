@@ -453,6 +453,30 @@ func (c *Catalog) ListDiscovered() ([]DiscoveredDB, error) {
 	return out, rows.Err()
 }
 
+func (c *Catalog) ListDiscoveredByStatus(status string) ([]DiscoveredDB, error) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	rows, err := c.db.Query(
+		`SELECT `+discoveredCols+` FROM discovered_databases WHERE status = ? ORDER BY id`,
+		status,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("catalog: list discovered by status: %w", err)
+	}
+	defer rows.Close()
+
+	var out []DiscoveredDB
+	for rows.Next() {
+		d, err := scanDiscovered(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *d)
+	}
+	return out, rows.Err()
+}
+
 func (c *Catalog) UpdateFavorite(id int64, favorite bool) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()

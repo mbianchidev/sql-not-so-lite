@@ -870,6 +870,44 @@ func (s *HTTPServer) handleStartReplication(w http.ResponseWriter, _ *http.Reque
 	}
 
 	replicaPath := filepath.Join(s.cfg.Replicator.ReplicaDir, d.Name+".sqlite")
+	state, stateErr := s.catalog.GetReplicationState(id)
+	switch {
+	case stateErr == nil:
+		if _, err := os.Stat(replicaPath); err == nil {
+			changedTables, err := replicator.DifferentialSync(d.SourcePath, replicaPath)
+			if err != nil {
+				if statusErr := s.catalog.UpdateStatus(id, "error", err.Error()); statusErr != nil {
+					log.Printf("replication: failed to record resume error for %d: %v", id, statusErr)
+				}
+				writeError(w, http.StatusInternalServerError, fmt.Sprintf("resume sync failed: %v", err))
+				return
+			}
+			state.LastSync = time.Now()
+			state.SyncMode = "differential"
+			if err := s.catalog.SetReplicationState(state); err != nil {
+				writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to update replication state: %v", err))
+				return
+			}
+			if err := s.catalog.UpdateStatus(id, "replicating", ""); err != nil {
+				writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to update status: %v", err))
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]interface{}{
+				"status":         "replicating",
+				"replica_path":   replicaPath,
+				"sync_mode":      "differential",
+				"changed_tables": changedTables,
+			})
+			return
+		} else if !errors.Is(err, os.ErrNotExist) {
+			writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to inspect replica: %v", err))
+			return
+		}
+	case errors.Is(stateErr, sql.ErrNoRows):
+	default:
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to load replication state: %v", stateErr))
+		return
+	}
 
 	// Create snapshot directory for this DB
 	snapshotDir := filepath.Join(s.cfg.Replicator.SnapshotDir, d.Name)
@@ -885,8 +923,14 @@ func (s *HTTPServer) handleStartReplication(w http.ResponseWriter, _ *http.Reque
 		return
 	}
 
+	snapshotVersion, err := s.catalog.NextSnapshotVersion(id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to choose snapshot version: %v", err))
+		return
+	}
+
 	// Create a snapshot from the replica for consistency
-	snapshotPath := filepath.Join(snapshotDir, "v1.sqlite")
+	snapshotPath := filepath.Join(snapshotDir, fmt.Sprintf("v%d.sqlite", snapshotVersion))
 	snapshotSize, err := replicator.CreateSnapshot(replicaPath, snapshotPath)
 	if err != nil {
 		// Clean up replica on failure
@@ -911,26 +955,49 @@ func (s *HTTPServer) handleStartReplication(w http.ResponseWriter, _ *http.Reque
 	normalizedSchema := schema.NormalizeSchema(schemaSQL)
 	schemaHash := schema.HashSchema(normalizedSchema)
 
-	// Store schema version 0
-	_, err = s.catalog.InsertSchemaVersion(&catalog.SchemaVersion{
-		DatabaseID: id,
-		Version:    0,
-		SchemaSQL:  schemaSQL,
-		SchemaHash: schemaHash,
-	})
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to store schema: %v", err))
+	schemaVersion := 0
+	latestSchema, err := s.catalog.LatestSchemaVersion(id)
+	switch {
+	case err == nil:
+		schemaVersion = latestSchema.Version
+		if latestSchema.SchemaHash != schemaHash {
+			schemaVersion++
+			if _, err := s.catalog.InsertSchemaVersion(&catalog.SchemaVersion{
+				DatabaseID: id,
+				Version:    schemaVersion,
+				SchemaSQL:  schemaSQL,
+				SchemaHash: schemaHash,
+			}); err != nil {
+				writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to store schema: %v", err))
+				return
+			}
+		}
+	case errors.Is(err, sql.ErrNoRows):
+		if _, err := s.catalog.InsertSchemaVersion(&catalog.SchemaVersion{
+			DatabaseID: id,
+			Version:    schemaVersion,
+			SchemaSQL:  schemaSQL,
+			SchemaHash: schemaHash,
+		}); err != nil {
+			writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to store schema: %v", err))
+			return
+		}
+	default:
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to load schema history: %v", err))
 		return
 	}
 
-	// Record initial snapshot
+	trigger := "manual"
+	if snapshotVersion == 1 {
+		trigger = "initial"
+	}
 	snapID, err := s.catalog.InsertSnapshot(&catalog.Snapshot{
 		DatabaseID:    id,
-		Version:       1,
-		SchemaVersion: 0,
+		Version:       snapshotVersion,
+		SchemaVersion: schemaVersion,
 		SnapshotPath:  snapshotPath,
 		SizeBytes:     snapshotSize,
-		Trigger:       "initial",
+		Trigger:       trigger,
 	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to record snapshot: %v", err))

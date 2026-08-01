@@ -31,7 +31,8 @@ Lightweight SQLite-as-a-service daemon. Manages multiple SQLite databases as fil
 - **Single binary**: GUI embedded via `go:embed` — one file to run
 - **Cross-platform**: macOS (launchd), Linux (systemd), Docker
 - **Database discovery**: Scans `$HOME` for SQLite databases across containers, app data dirs, and workspaces
-- **WAL-aware replication**: Replicates discovered databases with WAL-optimized change detection
+- **Persistent discovery**: Keeps scan history, missing-file state, and favorites across restarts
+- **Differential replication**: Resumes active replicas after restart and updates only changed tables
 - **Point-in-time recovery**: Restore any discovered database from snapshots
 - **Schema versioning**: Tracks schema changes with transition history (v0 = initial creation)
 - **GitHub repo detection**: Links discovered databases to their upstream GitHub repositories
@@ -191,6 +192,7 @@ grpcurl -plaintext -d '{"database":"myapp","sql":"SELECT * FROM users","limit":1
 | POST | `/api/scan` | Scan the default root or `{"paths":["/absolute/path"]}` |
 | GET | `/api/discovered` | List discovered databases |
 | GET | `/api/discovered/:id` | Get discovered DB details |
+| PATCH | `/api/discovered/:id` | Set favorite state `{"favorite":true}` |
 | POST | `/api/discovered/:id/replicate` | Start replication |
 | DELETE | `/api/discovered/:id/replicate` | Stop replication |
 | POST | `/api/discovered/:id/restore` | Restore `{"version":N}` |
@@ -217,9 +219,9 @@ Access at `http://localhost:9147` when the daemon is running.
 
 ### Scanning
 
-The scanner walks `$HOME` (configurable via `scan_root`) looking for SQLite files. Each candidate is validated by checking the first 16 bytes for the SQLite magic header (`SQLite format 3\000`). Discovered databases are recorded in an internal catalog (`catalog.sqlite`) with metadata like path, size, modification time, and priority tier.
+The scanner walks `$HOME` (configurable via `scan_root`) looking for SQLite files. Each candidate is validated by checking the first 16 bytes for the SQLite magic header (`SQLite format 3\000`). Discovered databases are recorded in an internal catalog (`catalog.sqlite`) with metadata like path, size, modification time, priority tier, favorite state, and availability.
 
-Scanning runs every 30 minutes by default. Set `scanner.scan_interval` in `~/.sql-not-so-lite/config.toml` to any Go duration such as `"15m"` or `"2h"`. Scans can also be triggered on-demand via `sqnsl scan` or `POST /api/scan`.
+Scanning runs every 30 minutes by default. Set `scanner.scan_interval` in `~/.sql-not-so-lite/config.toml` to any Go duration such as `"15m"` or `"2h"`. Scans can also be triggered on-demand via `sqnsl scan` or `POST /api/scan`. Repeat scans update changed metadata, confirm existing paths, and mark missing files without deleting their catalog history or favorites.
 
 ### Priority tiers
 
@@ -242,10 +244,11 @@ For each discovered database, the scanner walks up the directory tree looking fo
 Replication creates and maintains a copy of a discovered database under `replica_dir`:
 
 1. **Initial sync**: Uses `VACUUM INTO` to create a consistent baseline copy of the source database.
-2. **Incremental sync**: On each `sync_interval` tick, the replicator checks the source WAL for new frames. If changes are detected, a new snapshot is taken and the replica is updated.
-3. **Snapshots**: Each sync creates a timestamped snapshot in `snapshot_dir`. Old snapshots are pruned based on `snapshot_retention`.
+2. **Differential sync**: On each `sync_interval` tick, the replicator compares table schemas and rows, then transactionally replaces only changed tables and removes tables deleted from the source.
+3. **Automatic resume**: Databases left in the replicating state resume when the daemon starts again. Paused or failed replicas can be resumed without recreating version-one metadata.
+4. **Snapshots**: Initial baselines and explicit rebuilds are versioned in `snapshot_dir`. Old snapshots can be pruned based on `snapshot_retention`.
 
-WAL-aware change detection avoids unnecessary copies when a database hasn't changed.
+Replica writes are serialized per database, and each differential cycle reads the source through one consistent read transaction.
 
 ### Schema versioning
 

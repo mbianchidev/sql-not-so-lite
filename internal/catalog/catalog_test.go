@@ -786,6 +786,23 @@ func TestFavoritesAndAvailableDatabasesSortFirst(t *testing.T) {
 	}
 }
 
+func TestListDiscoveredByStatus(t *testing.T) {
+	cat := openTestCatalog(t)
+	firstID := insertTestDB(t, cat, "first", "/first.db")
+	insertTestDB(t, cat, "second", "/second.db")
+	if err := cat.UpdateStatus(firstID, "replicating", ""); err != nil {
+		t.Fatal(err)
+	}
+
+	list, err := cat.ListDiscoveredByStatus("replicating")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 1 || list[0].ID != firstID {
+		t.Fatalf("replicating databases = %+v", list)
+	}
+}
+
 func TestLatestSchemaVersionNoRows(t *testing.T) {
 	cat := openTestCatalog(t)
 	id := insertTestDB(t, cat, "emptyschema", "/emptyschema.db")

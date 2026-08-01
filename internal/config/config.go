@@ -61,6 +61,7 @@ type ReplicatorConfig struct {
 }
 
 const DefaultScanInterval = "30m"
+const DefaultReplicationInterval = "5s"
 
 func defaultScannerConfig(homeDir string) ScannerConfig {
 	return ScannerConfig{
@@ -106,7 +107,7 @@ func DefaultConfig() *Config {
 		Scanner: defaultScannerConfig(homeDir),
 		Replicator: ReplicatorConfig{
 			Enabled:           true,
-			SyncInterval:      "5s",
+			SyncInterval:      DefaultReplicationInterval,
 			SnapshotRetention: 10,
 			ReplicaDir:        filepath.Join(baseDir, "replicas"),
 			SnapshotDir:       filepath.Join(baseDir, "snapshots"),

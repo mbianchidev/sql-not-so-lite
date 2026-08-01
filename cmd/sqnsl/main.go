@@ -419,6 +419,31 @@ var replicateCmd = &cobra.Command{
 		}
 
 		replicaPath := filepath.Join(cfg.Replicator.ReplicaDir, db.Name+".sqlite")
+		state, stateErr := cat.GetReplicationState(db.ID)
+		if stateErr == nil {
+			if _, err := os.Stat(replicaPath); err == nil {
+				fmt.Printf("Resuming differential sync: %s → %s\n", db.SourcePath, replicaPath)
+				changedTables, err := replicator.DifferentialSync(db.SourcePath, replicaPath)
+				if err != nil {
+					_ = cat.UpdateStatus(db.ID, "error", err.Error())
+					return fmt.Errorf("resume sync failed: %w", err)
+				}
+				state.LastSync = time.Now()
+				state.SyncMode = "differential"
+				if err := cat.SetReplicationState(state); err != nil {
+					return fmt.Errorf("failed to update replication state: %w", err)
+				}
+				if err := cat.UpdateStatus(db.ID, "replicating", ""); err != nil {
+					return fmt.Errorf("failed to update status: %w", err)
+				}
+				fmt.Printf("Replication resumed for %q (%d changed table(s))\n", name, len(changedTables))
+				return nil
+			} else if !os.IsNotExist(err) {
+				return fmt.Errorf("failed to inspect replica: %w", err)
+			}
+		} else if stateErr != sql.ErrNoRows {
+			return fmt.Errorf("failed to load replication state: %w", stateErr)
+		}
 
 		fmt.Printf("Starting initial sync: %s → %s\n", db.SourcePath, replicaPath)
 		_, err = replicator.InitialSync(db.SourcePath, replicaPath)
@@ -440,29 +465,55 @@ var replicateCmd = &cobra.Command{
 		normalized := schema.NormalizeSchema(rawSchema)
 		hash := schema.HashSchema(normalized)
 
-		_, err = cat.InsertSchemaVersion(&catalog.SchemaVersion{
-			DatabaseID: db.ID,
-			Version:    0,
-			SchemaSQL:  rawSchema,
-			SchemaHash: hash,
-		})
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: failed to store schema version: %v\n", err)
+		schemaVersion := 0
+		latestSchema, schemaErr := cat.LatestSchemaVersion(db.ID)
+		switch {
+		case schemaErr == nil:
+			schemaVersion = latestSchema.Version
+			if latestSchema.SchemaHash != hash {
+				schemaVersion++
+				_, schemaErr = cat.InsertSchemaVersion(&catalog.SchemaVersion{
+					DatabaseID: db.ID,
+					Version:    schemaVersion,
+					SchemaSQL:  rawSchema,
+					SchemaHash: hash,
+				})
+			}
+		case schemaErr == sql.ErrNoRows:
+			_, schemaErr = cat.InsertSchemaVersion(&catalog.SchemaVersion{
+				DatabaseID: db.ID,
+				Version:    schemaVersion,
+				SchemaSQL:  rawSchema,
+				SchemaHash: hash,
+			})
+		}
+		if schemaErr != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to store schema version: %v\n", schemaErr)
 		}
 
-		// Create initial snapshot record
-		snapshotPath := filepath.Join(cfg.Replicator.SnapshotDir, db.Name+"_v1.sqlite")
+		snapshotVersion, err := cat.NextSnapshotVersion(db.ID)
+		if err != nil {
+			return fmt.Errorf("failed to choose snapshot version: %w", err)
+		}
+		snapshotPath := filepath.Join(
+			cfg.Replicator.SnapshotDir,
+			fmt.Sprintf("%s_v%d.sqlite", db.Name, snapshotVersion),
+		)
 		snapshotSize, err := replicator.CreateSnapshot(db.SourcePath, snapshotPath)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: failed to create snapshot: %v\n", err)
 		} else {
+			trigger := "manual"
+			if snapshotVersion == 1 {
+				trigger = "initial"
+			}
 			_, err = cat.InsertSnapshot(&catalog.Snapshot{
 				DatabaseID:    db.ID,
-				Version:       1,
-				SchemaVersion: 0,
+				Version:       snapshotVersion,
+				SchemaVersion: schemaVersion,
 				SnapshotPath:  snapshotPath,
 				SizeBytes:     snapshotSize,
-				Trigger:       "initial",
+				Trigger:       trigger,
 			})
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Warning: failed to record snapshot: %v\n", err)

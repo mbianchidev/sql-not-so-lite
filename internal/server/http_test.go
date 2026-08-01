@@ -14,6 +14,7 @@ import (
 
 	"github.com/mbianchidev/sql-not-so-lite/internal/catalog"
 	"github.com/mbianchidev/sql-not-so-lite/internal/config"
+	"github.com/mbianchidev/sql-not-so-lite/internal/replicator"
 	"github.com/mbianchidev/sql-not-so-lite/internal/service"
 	"github.com/mbianchidev/sql-not-so-lite/internal/store"
 	_ "modernc.org/sqlite"
@@ -290,6 +291,90 @@ func TestHandleDiscoveredPatchRejectsInvalidBody(t *testing.T) {
 
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+}
+
+func TestHandleStartReplicationResumesExistingReplica(t *testing.T) {
+	root := t.TempDir()
+	sourcePath := filepath.Join(root, "source.sqlite")
+	createHTTPTestDatabase(t, sourcePath)
+	server := newScanTestServer(t, root)
+	server.cfg.Replicator.ReplicaDir = filepath.Join(root, "replicas")
+	server.cfg.Replicator.SnapshotDir = filepath.Join(root, "snapshots")
+	if err := os.MkdirAll(server.cfg.Replicator.ReplicaDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	id, err := server.catalog.UpsertDiscovered(&catalog.DiscoveredDB{
+		Name:       "source",
+		SourcePath: sourcePath,
+		Status:     "paused",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	replicaPath := filepath.Join(server.cfg.Replicator.ReplicaDir, "source.sqlite")
+	if _, err := replicator.InitialSync(sourcePath, replicaPath); err != nil {
+		t.Fatal(err)
+	}
+	snapshotID, err := server.catalog.InsertSnapshot(&catalog.Snapshot{
+		DatabaseID:    id,
+		Version:       1,
+		SchemaVersion: 0,
+		SnapshotPath:  filepath.Join(server.cfg.Replicator.SnapshotDir, "source", "v1.sqlite"),
+		Trigger:       "initial",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := server.catalog.SetReplicationState(&catalog.ReplicationState{
+		DatabaseID:     id,
+		ReplicaName:    "source",
+		BaseSnapshotID: sql.NullInt64{Int64: snapshotID, Valid: true},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	source, err := sql.Open("sqlite", sourcePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := source.Exec("INSERT INTO test (value) VALUES ('resumed')"); err != nil {
+		source.Close()
+		t.Fatal(err)
+	}
+	source.Close()
+
+	req := httptest.NewRequest(http.MethodPost, "/api/discovered/1/replicate", nil)
+	rec := httptest.NewRecorder()
+	server.handleStartReplication(rec, req, id)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	replica, err := sql.Open("sqlite", replicaPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer replica.Close()
+	var count int
+	if err := replica.QueryRow("SELECT COUNT(*) FROM test").Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 2 {
+		t.Fatalf("replica row count = %d, want 2", count)
+	}
+	snapshots, err := server.catalog.ListSnapshots(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshots) != 1 {
+		t.Fatalf("snapshot count = %d, want 1", len(snapshots))
+	}
+	state, err := server.catalog.GetReplicationState(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.SyncMode != "differential" {
+		t.Fatalf("sync mode = %q, want differential", state.SyncMode)
 	}
 }
 
