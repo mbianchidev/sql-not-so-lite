@@ -67,6 +67,43 @@ func TestCreateSnapshot_InvalidSource(t *testing.T) {
 	}
 }
 
+func TestCreateSnapshotReplacesExistingDestination(t *testing.T) {
+	dir := t.TempDir()
+	srcPath := createTestDB(t, dir, "source.sqlite")
+	snapPath := filepath.Join(dir, "snapshot.sqlite")
+
+	if _, err := CreateSnapshot(srcPath, snapPath); err != nil {
+		t.Fatal(err)
+	}
+
+	source, err := sql.Open("sqlite", srcPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := source.Exec("INSERT INTO users (name) VALUES ('carol')"); err != nil {
+		source.Close()
+		t.Fatal(err)
+	}
+	source.Close()
+
+	if _, err := CreateSnapshot(srcPath, snapPath); err != nil {
+		t.Fatalf("replace existing snapshot: %v", err)
+	}
+
+	snapshot, err := sql.Open("sqlite", snapPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer snapshot.Close()
+	var count int
+	if err := snapshot.QueryRow("SELECT COUNT(*) FROM users").Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 3 {
+		t.Fatalf("snapshot row count = %d, want 3", count)
+	}
+}
+
 func TestRestoreSnapshot(t *testing.T) {
 	dir := t.TempDir()
 	srcPath := createTestDB(t, dir, "source.sqlite")
