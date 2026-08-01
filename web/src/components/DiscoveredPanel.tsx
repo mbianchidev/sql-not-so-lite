@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { api, type DiscoveredDB } from '../api/client';
 import { SchemaTimeline } from './SchemaTimeline';
 
@@ -14,6 +14,8 @@ const PRIORITY_LABELS: Record<string, string> = {
   app_data: 'App Data',
   other: 'Other',
 };
+
+const DEFAULT_SCAN_PATH = '~/';
 
 function formatSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -49,8 +51,9 @@ export function DiscoveredPanel({ selectedId, onSelect }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [scanMessage, setScanMessage] = useState<string | null>(null);
   const [actionLoading, setActionLoading] = useState<number | null>(null);
-  const [scanPath, setScanPath] = useState('~/');
+  const [scanPath, setScanPath] = useState(DEFAULT_SCAN_PATH);
   const [searchQuery, setSearchQuery] = useState('');
+  const initialScanStarted = useRef(false);
 
   const refresh = useCallback(async () => {
     try {
@@ -65,9 +68,7 @@ export function DiscoveredPanel({ selectedId, onSelect }: Props) {
     }
   }, []);
 
-  useEffect(() => { refresh(); }, [refresh]);
-
-  const handleScan = async (paths?: string[]): Promise<boolean> => {
+  const scan = useCallback(async (paths: string[]): Promise<boolean> => {
     try {
       setScanning(true);
       setError(null);
@@ -84,15 +85,19 @@ export function DiscoveredPanel({ selectedId, onSelect }: Props) {
     } finally {
       setScanning(false);
     }
-  };
+  }, [refresh]);
 
-  const handleScanPath = async () => {
+  const handleScan = async () => {
     const trimmed = scanPath.trim();
     if (!trimmed) return;
-    if (await handleScan([trimmed])) {
-      setScanPath('~/');
-    }
+    await scan([trimmed]);
   };
+
+  useEffect(() => {
+    if (initialScanStarted.current) return;
+    initialScanStarted.current = true;
+    void scan([DEFAULT_SCAN_PATH]);
+  }, [scan]);
 
   const handleReplicate = async (id: number) => {
     try {
@@ -170,9 +175,6 @@ export function DiscoveredPanel({ selectedId, onSelect }: Props) {
       <div className="discovered-header">
         <h3>Discovered Databases</h3>
         <div className="discovered-actions">
-          <button className="btn-primary" onClick={() => handleScan()} disabled={scanning}>
-            {scanning ? 'Scanning…' : '⟳ Scan'}
-          </button>
           <button className="btn-icon" onClick={refresh} title="Refresh list">⟳</button>
         </div>
       </div>
@@ -182,12 +184,12 @@ export function DiscoveredPanel({ selectedId, onSelect }: Props) {
           type="text"
           value={scanPath}
           onChange={(e) => setScanPath(e.target.value)}
-          onKeyDown={(e) => e.key === 'Enter' && handleScanPath()}
+          onKeyDown={(e) => e.key === 'Enter' && handleScan()}
           placeholder="Enter path to scan…"
           disabled={scanning}
         />
-        <button className="btn-sm" onClick={handleScanPath} disabled={scanning || !scanPath.trim()}>
-          Scan Path
+        <button className="btn-primary" onClick={handleScan} disabled={scanning || !scanPath.trim()}>
+          {scanning ? 'Scanning…' : 'Scan'}
         </button>
       </div>
 

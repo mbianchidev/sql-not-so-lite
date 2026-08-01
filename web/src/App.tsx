@@ -14,7 +14,7 @@ function App() {
   const [selectedDb, setSelectedDb] = useState<string | null>(null);
   const [selectedTable, setSelectedTable] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<DatabaseTab>('browse');
-  const [view, setView] = useState<View>('database');
+  const [view, setView] = useState<View>('discovered');
   const [darkMode, setDarkMode] = useState(true);
   const [selectedDiscoveredId, setSelectedDiscoveredId] = useState<number | null>(null);
 
