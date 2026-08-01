@@ -49,7 +49,7 @@ export function DiscoveredPanel({ selectedId, onSelect }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [scanMessage, setScanMessage] = useState<string | null>(null);
   const [actionLoading, setActionLoading] = useState<number | null>(null);
-  const [scanPath, setScanPath] = useState('/');
+  const [scanPath, setScanPath] = useState('~/');
   const [searchQuery, setSearchQuery] = useState('');
 
   const refresh = useCallback(async () => {
@@ -90,7 +90,7 @@ export function DiscoveredPanel({ selectedId, onSelect }: Props) {
     const trimmed = scanPath.trim();
     if (!trimmed) return;
     if (await handleScan([trimmed])) {
-      setScanPath('/');
+      setScanPath('~/');
     }
   };
 
