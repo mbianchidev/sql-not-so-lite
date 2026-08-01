@@ -49,8 +49,7 @@ export function DiscoveredPanel({ selectedId, onSelect }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [scanMessage, setScanMessage] = useState<string | null>(null);
   const [actionLoading, setActionLoading] = useState<number | null>(null);
-  const [scanPath, setScanPath] = useState('');
-  const [showScanInput, setShowScanInput] = useState(false);
+  const [scanPath, setScanPath] = useState('/');
   const [searchQuery, setSearchQuery] = useState('');
 
   const refresh = useCallback(async () => {
@@ -91,8 +90,7 @@ export function DiscoveredPanel({ selectedId, onSelect }: Props) {
     const trimmed = scanPath.trim();
     if (!trimmed) return;
     if (await handleScan([trimmed])) {
-      setScanPath('');
-      setShowScanInput(false);
+      setScanPath('/');
     }
   };
 
@@ -175,32 +173,23 @@ export function DiscoveredPanel({ selectedId, onSelect }: Props) {
           <button className="btn-primary" onClick={() => handleScan()} disabled={scanning}>
             {scanning ? 'Scanning…' : '⟳ Scan'}
           </button>
-          <button
-            className="btn-sm"
-            onClick={() => setShowScanInput(!showScanInput)}
-            title="Scan a specific path"
-          >
-            📁
-          </button>
           <button className="btn-icon" onClick={refresh} title="Refresh list">⟳</button>
         </div>
       </div>
 
-      {showScanInput && (
-        <div className="scan-path-input">
-          <input
-            type="text"
-            value={scanPath}
-            onChange={(e) => setScanPath(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && handleScanPath()}
-            placeholder="Enter path to scan…"
-            disabled={scanning}
-          />
-          <button className="btn-sm" onClick={handleScanPath} disabled={scanning || !scanPath.trim()}>
-            Scan Path
-          </button>
-        </div>
-      )}
+      <div className="scan-path-input">
+        <input
+          type="text"
+          value={scanPath}
+          onChange={(e) => setScanPath(e.target.value)}
+          onKeyDown={(e) => e.key === 'Enter' && handleScanPath()}
+          placeholder="Enter path to scan…"
+          disabled={scanning}
+        />
+        <button className="btn-sm" onClick={handleScanPath} disabled={scanning || !scanPath.trim()}>
+          Scan Path
+        </button>
+      </div>
 
       {error && <div className="error-msg">{error}</div>}
       {scanMessage && <div className="scan-result">{scanMessage}</div>}

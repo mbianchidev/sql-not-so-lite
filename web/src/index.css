@@ -126,7 +126,7 @@ body {
 
 .sidebar-menu {
   padding: 0.75rem;
-  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
 }
 .sidebar-menu-item {
   display: flex;
