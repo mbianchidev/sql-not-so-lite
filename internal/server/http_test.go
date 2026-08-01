@@ -630,6 +630,45 @@ func TestCreateDatabaseDisambiguatesCatalogName(t *testing.T) {
 	}
 }
 
+func TestHandleColumnsEditsExistingColumn(t *testing.T) {
+	server, _ := setupHTTPTestServer(t)
+	ctx := context.Background()
+	if _, err := server.svc.CreateDatabase(ctx, "edit-column"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := server.svc.Execute(
+		ctx,
+		"edit-column",
+		"CREATE TABLE items (value TEXT); INSERT INTO items VALUES ('7')",
+		nil,
+	); err != nil {
+		t.Fatal(err)
+	}
+	body := bytes.NewBufferString(`{
+		"OriginalName":"value",
+		"Name":"amount",
+		"Type":"INTEGER",
+		"Nullable":false,
+		"DefaultValue":"0"
+	}`)
+	req := httptest.NewRequest(
+		http.MethodPut,
+		"/api/databases/edit-column/tables/items/columns",
+		body,
+	)
+	rec := httptest.NewRecorder()
+
+	server.handleColumns(rec, req, "edit-column", "items")
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	rows, err := server.svc.Query(ctx, "edit-column", "SELECT amount FROM items", nil, 1, 0)
+	if err != nil || len(rows.Rows) != 1 || rows.Rows[0][0] != "7" {
+		t.Fatalf("edited rows = %+v, error = %v", rows, err)
+	}
+}
+
 func TestSchemaMutationRoutes(t *testing.T) {
 	server, _ := setupHTTPTestServer(t)
 	if _, err := server.svc.CreateDatabase(context.Background(), "schema"); err != nil {

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/mbianchidev/sql-not-so-lite/internal/store"
 )
@@ -78,6 +79,14 @@ type CreateTableRequest struct {
 type InsertRowRequest struct {
 	Columns []string
 	Values  []*string
+}
+
+type EditColumnRequest struct {
+	OriginalName string
+	Name         string
+	Type         string
+	Nullable     bool
+	DefaultValue *string
 }
 
 var sqliteColumnTypes = map[string]struct{}{
@@ -247,6 +256,444 @@ func (s *DatabaseService) AddColumn(_ context.Context, dbName, tableName string,
 		return fmt.Errorf("add column failed: %w", err)
 	}
 	return nil
+}
+
+func (s *DatabaseService) EditColumn(
+	ctx context.Context,
+	dbName, tableName string,
+	req EditColumnRequest,
+) (resultErr error) {
+	if err := validateExistingIdentifier("table", tableName); err != nil {
+		return err
+	}
+	if err := validateExistingIdentifier("column", req.OriginalName); err != nil {
+		return err
+	}
+	if err := validateIdentifier("column", req.Name); err != nil {
+		return err
+	}
+	columnType := strings.ToUpper(strings.TrimSpace(req.Type))
+	if _, ok := sqliteColumnTypes[columnType]; !ok {
+		return fmt.Errorf("unsupported column type %q", req.Type)
+	}
+
+	entry, err := s.manager.Get(dbName)
+	if err != nil {
+		return err
+	}
+	conn, err := entry.DB.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("edit column: acquire database connection: %w", err)
+	}
+	defer conn.Close()
+
+	columns, err := loadEditableColumns(ctx, conn, tableName)
+	if err != nil {
+		return fmt.Errorf("edit column: read table schema: %w", err)
+	}
+	if len(columns) == 0 {
+		return fmt.Errorf("table %q does not exist", tableName)
+	}
+	targetIndex := -1
+	primaryKeys := 0
+	for index, column := range columns {
+		if column.Hidden != 0 {
+			return fmt.Errorf("editing tables with generated or hidden columns is not supported")
+		}
+		if column.PrimaryKey {
+			primaryKeys++
+		}
+		if sqliteIdentifierKey(column.Name) == sqliteIdentifierKey(req.OriginalName) {
+			targetIndex = index
+		}
+		if index != targetIndex &&
+			sqliteIdentifierKey(column.Name) == sqliteIdentifierKey(req.Name) &&
+			sqliteIdentifierKey(column.Name) != sqliteIdentifierKey(req.OriginalName) {
+			return fmt.Errorf("column %q already exists", req.Name)
+		}
+	}
+	if targetIndex < 0 {
+		return fmt.Errorf("column %q does not exist in table %q", req.OriginalName, tableName)
+	}
+	target := columns[targetIndex]
+	if primaryKeys > 1 {
+		return fmt.Errorf("editing tables with composite primary keys is not supported")
+	}
+	if target.PrimaryKey {
+		if req.Nullable {
+			return fmt.Errorf("primary key columns cannot be nullable")
+		}
+		if !strings.EqualFold(target.Type, columnType) {
+			return fmt.Errorf("primary key column types cannot be changed")
+		}
+	}
+	if err := validateEditableTable(ctx, conn, tableName); err != nil {
+		return err
+	}
+	if !req.Nullable && target.Nullable {
+		var nullCount int64
+		err := conn.QueryRowContext(
+			ctx,
+			"SELECT COUNT(*) FROM "+quoteIdentifier(tableName)+
+				" WHERE "+quoteIdentifier(target.Name)+" IS NULL",
+		).Scan(&nullCount)
+		if err != nil {
+			return fmt.Errorf("edit column: count NULL values: %w", err)
+		}
+		if nullCount > 0 && req.DefaultValue == nil {
+			return fmt.Errorf(
+				"column %q contains NULL values; provide a default before making it NOT NULL",
+				target.Name,
+			)
+		}
+	}
+
+	var foreignKeys int
+	if err := conn.QueryRowContext(ctx, "PRAGMA foreign_keys").Scan(&foreignKeys); err != nil {
+		return fmt.Errorf("edit column: read foreign key mode: %w", err)
+	}
+	if foreignKeys != 0 {
+		if _, err := conn.ExecContext(ctx, "PRAGMA foreign_keys = OFF"); err != nil {
+			return fmt.Errorf("edit column: disable foreign keys: %w", err)
+		}
+		defer func() {
+			if _, err := conn.ExecContext(context.Background(), "PRAGMA foreign_keys = ON"); err != nil && resultErr == nil {
+				resultErr = fmt.Errorf("edit column: restore foreign key mode: %w", err)
+			}
+		}()
+	}
+
+	tx, err := conn.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("edit column: begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	currentName := target.Name
+	if sqliteIdentifierKey(target.Name) != sqliteIdentifierKey(req.Name) || target.Name != req.Name {
+		statement := fmt.Sprintf(
+			"ALTER TABLE %s RENAME COLUMN %s TO %s",
+			quoteIdentifier(tableName),
+			quoteIdentifier(target.Name),
+			quoteIdentifier(req.Name),
+		)
+		if _, err := tx.ExecContext(ctx, statement); err != nil {
+			return fmt.Errorf("edit column: rename field: %w", err)
+		}
+		currentName = req.Name
+	}
+
+	columns, err = loadEditableColumns(ctx, tx, tableName)
+	if err != nil {
+		return fmt.Errorf("edit column: reload table schema: %w", err)
+	}
+	objects, err := loadTableSchemaObjects(ctx, tx, tableName)
+	if err != nil {
+		return fmt.Errorf("edit column: read indexes and triggers: %w", err)
+	}
+
+	definitions := make([]string, 0, len(columns))
+	columnNames := make([]string, 0, len(columns))
+	selectExpressions := make([]string, 0, len(columns))
+	var copyArgs []interface{}
+	for _, column := range columns {
+		columnNames = append(columnNames, quoteIdentifier(column.Name))
+		if sqliteIdentifierKey(column.Name) == sqliteIdentifierKey(currentName) {
+			definitions = append(definitions, buildEditedColumnDefinition(
+				req.Name,
+				columnType,
+				!req.Nullable,
+				column.PrimaryKey,
+				req.DefaultValue,
+				true,
+			))
+			expression := quoteIdentifier(column.Name)
+			if !req.Nullable && req.DefaultValue != nil {
+				expression = "COALESCE(" + expression + ", ?)"
+				copyArgs = append(copyArgs, *req.DefaultValue)
+			}
+			selectExpressions = append(selectExpressions, expression)
+			continue
+		}
+		definitions = append(definitions, buildEditedColumnDefinition(
+			column.Name,
+			column.Type,
+			!column.Nullable,
+			column.PrimaryKey,
+			column.DefaultValue,
+			false,
+		))
+		selectExpressions = append(selectExpressions, quoteIdentifier(column.Name))
+	}
+
+	tempTable := fmt.Sprintf("__sqnsl_rebuild_%d", time.Now().UnixNano())
+	if _, err := tx.ExecContext(
+		ctx,
+		"CREATE TABLE "+quoteIdentifier(tempTable)+" ("+strings.Join(definitions, ", ")+")",
+	); err != nil {
+		return fmt.Errorf("edit column: create replacement table: %w", err)
+	}
+	copyStatement := fmt.Sprintf(
+		"INSERT INTO %s (%s) SELECT %s FROM %s",
+		quoteIdentifier(tempTable),
+		strings.Join(columnNames, ", "),
+		strings.Join(selectExpressions, ", "),
+		quoteIdentifier(tableName),
+	)
+	if _, err := tx.ExecContext(ctx, copyStatement, copyArgs...); err != nil {
+		return fmt.Errorf("edit column: copy rows: %w", err)
+	}
+
+	var sourceCount, replacementCount int64
+	if err := tx.QueryRowContext(
+		ctx,
+		"SELECT COUNT(*) FROM "+quoteIdentifier(tableName),
+	).Scan(&sourceCount); err != nil {
+		return fmt.Errorf("edit column: count source rows: %w", err)
+	}
+	if err := tx.QueryRowContext(
+		ctx,
+		"SELECT COUNT(*) FROM "+quoteIdentifier(tempTable),
+	).Scan(&replacementCount); err != nil {
+		return fmt.Errorf("edit column: count replacement rows: %w", err)
+	}
+	if sourceCount != replacementCount {
+		return fmt.Errorf(
+			"edit column: row count changed from %d to %d",
+			sourceCount,
+			replacementCount,
+		)
+	}
+
+	if _, err := tx.ExecContext(ctx, "DROP TABLE "+quoteIdentifier(tableName)); err != nil {
+		return fmt.Errorf("edit column: replace table: %w", err)
+	}
+	if _, err := tx.ExecContext(
+		ctx,
+		"ALTER TABLE "+quoteIdentifier(tempTable)+" RENAME TO "+quoteIdentifier(tableName),
+	); err != nil {
+		return fmt.Errorf("edit column: restore table name: %w", err)
+	}
+	for _, objectSQL := range objects {
+		if _, err := tx.ExecContext(ctx, objectSQL); err != nil {
+			return fmt.Errorf("edit column: recreate index or trigger: %w", err)
+		}
+	}
+	rows, err := tx.QueryContext(ctx, "PRAGMA foreign_key_check")
+	if err != nil {
+		return fmt.Errorf("edit column: validate foreign keys: %w", err)
+	}
+	if rows.Next() {
+		rows.Close()
+		return fmt.Errorf("edit column: rebuild would violate a foreign key")
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return fmt.Errorf("edit column: check foreign keys: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("edit column: close foreign key validation: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("edit column: commit rebuild: %w", err)
+	}
+	return nil
+}
+
+type editableColumn struct {
+	Name         string
+	Type         string
+	Nullable     bool
+	DefaultValue *string
+	PrimaryKey   bool
+	Hidden       int
+}
+
+type schemaQueryer interface {
+	QueryContext(context.Context, string, ...interface{}) (*sql.Rows, error)
+	QueryRowContext(context.Context, string, ...interface{}) *sql.Row
+}
+
+func loadEditableColumns(
+	ctx context.Context,
+	db schemaQueryer,
+	tableName string,
+) ([]editableColumn, error) {
+	rows, err := db.QueryContext(
+		ctx,
+		`SELECT name, type, "notnull", dflt_value, pk, hidden
+		 FROM pragma_table_xinfo(?) ORDER BY cid`,
+		tableName,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var columns []editableColumn
+	for rows.Next() {
+		var column editableColumn
+		var notNull, primaryKey int
+		var defaultValue sql.NullString
+		if err := rows.Scan(
+			&column.Name,
+			&column.Type,
+			&notNull,
+			&defaultValue,
+			&primaryKey,
+			&column.Hidden,
+		); err != nil {
+			return nil, err
+		}
+		column.Nullable = notNull == 0 && primaryKey == 0
+		column.PrimaryKey = primaryKey != 0
+		if defaultValue.Valid {
+			value := defaultValue.String
+			column.DefaultValue = &value
+		}
+		columns = append(columns, column)
+	}
+	return columns, rows.Err()
+}
+
+func loadTableSchemaObjects(
+	ctx context.Context,
+	db schemaQueryer,
+	tableName string,
+) ([]string, error) {
+	rows, err := db.QueryContext(
+		ctx,
+		`SELECT sql FROM sqlite_master
+		 WHERE tbl_name = ? AND type IN ('index', 'trigger') AND sql IS NOT NULL
+		 ORDER BY type, name`,
+		tableName,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var objects []string
+	for rows.Next() {
+		var objectSQL string
+		if err := rows.Scan(&objectSQL); err != nil {
+			return nil, err
+		}
+		objects = append(objects, objectSQL)
+	}
+	return objects, rows.Err()
+}
+
+func validateEditableTable(ctx context.Context, db schemaQueryer, tableName string) error {
+	var createSQL string
+	if err := db.QueryRowContext(
+		ctx,
+		"SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?",
+		tableName,
+	).Scan(&createSQL); err != nil {
+		return fmt.Errorf("edit column: read table definition: %w", err)
+	}
+	for _, keyword := range []string{"AUTOINCREMENT", "CHECK", "COLLATE", "GENERATED", "STRICT", "WITHOUT"} {
+		if containsSQLKeyword(createSQL, keyword) {
+			return fmt.Errorf("editing tables that use %s is not supported", keyword)
+		}
+	}
+
+	var uniqueConstraints int
+	if err := db.QueryRowContext(
+		ctx,
+		`SELECT COUNT(*) FROM pragma_index_list(?) WHERE origin = 'u'`,
+		tableName,
+	).Scan(&uniqueConstraints); err != nil {
+		return fmt.Errorf("edit column: inspect UNIQUE constraints: %w", err)
+	}
+	if uniqueConstraints > 0 {
+		return fmt.Errorf("editing tables with UNIQUE constraints is not supported")
+	}
+	var foreignKeys int
+	if err := db.QueryRowContext(
+		ctx,
+		"SELECT COUNT(*) FROM pragma_foreign_key_list(?)",
+		tableName,
+	).Scan(&foreignKeys); err != nil {
+		return fmt.Errorf("edit column: inspect foreign keys: %w", err)
+	}
+	if foreignKeys > 0 {
+		return fmt.Errorf("editing tables with FOREIGN KEY constraints is not supported")
+	}
+	return nil
+}
+
+func buildEditedColumnDefinition(
+	name, columnType string,
+	notNull, primaryKey bool,
+	defaultValue *string,
+	defaultIsLiteral bool,
+) string {
+	parts := []string{quoteIdentifier(name), strings.ToUpper(strings.TrimSpace(columnType))}
+	if primaryKey {
+		parts = append(parts, "NOT NULL", "PRIMARY KEY")
+	} else if notNull {
+		parts = append(parts, "NOT NULL")
+	}
+	if defaultValue != nil {
+		value := *defaultValue
+		if defaultIsLiteral {
+			value = quoteLiteral(value)
+		}
+		parts = append(parts, "DEFAULT", value)
+	}
+	return strings.Join(parts, " ")
+}
+
+func containsSQLKeyword(statement, keyword string) bool {
+	keyword = strings.ToUpper(keyword)
+	for index := 0; index < len(statement); {
+		switch statement[index] {
+		case '\'', '"', '`':
+			quote := statement[index]
+			index++
+			for index < len(statement) {
+				if statement[index] == quote {
+					if index+1 < len(statement) && statement[index+1] == quote {
+						index += 2
+						continue
+					}
+					index++
+					break
+				}
+				index++
+			}
+		case '[':
+			index++
+			for index < len(statement) && statement[index] != ']' {
+				index++
+			}
+			if index < len(statement) {
+				index++
+			}
+		default:
+			if !isSQLWordCharacter(statement[index]) {
+				index++
+				continue
+			}
+			start := index
+			for index < len(statement) && isSQLWordCharacter(statement[index]) {
+				index++
+			}
+			if strings.ToUpper(statement[start:index]) == keyword {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func isSQLWordCharacter(value byte) bool {
+	return value == '_' ||
+		value >= '0' && value <= '9' ||
+		value >= 'A' && value <= 'Z' ||
+		value >= 'a' && value <= 'z'
 }
 
 func (s *DatabaseService) InsertRow(

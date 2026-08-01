@@ -2,6 +2,8 @@ package service
 
 import (
 	"context"
+	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/mbianchidev/sql-not-so-lite/internal/store"
@@ -383,6 +385,184 @@ func TestDropDatabase(t *testing.T) {
 	}
 }
 
+func TestEditColumnRebuildsDataAndPreservesSchemaObjects(t *testing.T) {
+	svc := setupTestService(t)
+	ctx := context.Background()
+	if _, err := svc.CreateDatabase(ctx, "column-edit"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Execute(ctx, "column-edit", `
+		CREATE TABLE users (
+			id INTEGER NOT NULL PRIMARY KEY,
+			nickname TEXT
+		);
+		CREATE INDEX users_nickname_idx ON users(nickname);
+		CREATE TRIGGER users_nickname_guard
+		BEFORE INSERT ON users
+		WHEN NEW.nickname = 'blocked'
+		BEGIN
+			SELECT RAISE(ABORT, 'blocked nickname');
+		END;
+		INSERT INTO users (id, nickname) VALUES (1, NULL), (2, '42');
+	`, nil); err != nil {
+		t.Fatal(err)
+	}
+	defaultValue := "0"
+	if err := svc.EditColumn(ctx, "column-edit", "users", EditColumnRequest{
+		OriginalName: "nickname",
+		Name:         "score",
+		Type:         "INTEGER",
+		Nullable:     false,
+		DefaultValue: &defaultValue,
+	}); err != nil {
+		t.Fatalf("EditColumn failed: %v", err)
+	}
+
+	schema, err := svc.GetSchema(ctx, "column-edit")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(schema) != 1 || len(schema[0].Columns) != 2 {
+		t.Fatalf("unexpected schema: %+v", schema)
+	}
+	column := schema[0].Columns[1]
+	if column.Name != "score" || column.Type != "INTEGER" || column.Nullable {
+		t.Fatalf("edited column = %+v", column)
+	}
+	rows, err := svc.Query(
+		ctx,
+		"column-edit",
+		"SELECT id, score, typeof(score) FROM users ORDER BY id",
+		nil,
+		10,
+		0,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := [][]string{{"1", "0", "integer"}, {"2", "42", "integer"}}
+	if !reflect.DeepEqual(rows.Rows, want) {
+		t.Fatalf("rows = %v, want %v", rows.Rows, want)
+	}
+	for _, objectName := range []string{"users_nickname_idx", "users_nickname_guard"} {
+		result, err := svc.Query(
+			ctx,
+			"column-edit",
+			"SELECT sql FROM sqlite_master WHERE name = ?",
+			[]string{objectName},
+			1,
+			0,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(result.Rows) != 1 || !strings.Contains(result.Rows[0][0], "score") {
+			t.Fatalf("schema object %q was not updated: %+v", objectName, result.Rows)
+		}
+	}
+	if _, err := svc.Execute(
+		ctx,
+		"column-edit",
+		"INSERT INTO users (id, score) VALUES (3, 'blocked')",
+		nil,
+	); err == nil {
+		t.Fatal("preserved trigger did not reject the row")
+	}
+}
+
+func TestEditColumnRejectsNotNullWithoutDefault(t *testing.T) {
+	svc := setupTestService(t)
+	ctx := context.Background()
+	if _, err := svc.CreateDatabase(ctx, "column-null"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Execute(
+		ctx,
+		"column-null",
+		"CREATE TABLE items (value TEXT); INSERT INTO items (value) VALUES (NULL)",
+		nil,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	err := svc.EditColumn(ctx, "column-null", "items", EditColumnRequest{
+		OriginalName: "value",
+		Name:         "value",
+		Type:         "TEXT",
+		Nullable:     false,
+	})
+	if err == nil || !strings.Contains(err.Error(), "contains NULL") {
+		t.Fatalf("error = %v, want NULL validation", err)
+	}
+	schema, schemaErr := svc.GetSchema(ctx, "column-null")
+	if schemaErr != nil {
+		t.Fatal(schemaErr)
+	}
+	if !schema[0].Columns[0].Nullable {
+		t.Fatal("failed edit changed the schema")
+	}
+}
+
+func TestEditColumnRejectsUnsupportedConstraints(t *testing.T) {
+	svc := setupTestService(t)
+	ctx := context.Background()
+	if _, err := svc.CreateDatabase(ctx, "column-constraint"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Execute(
+		ctx,
+		"column-constraint",
+		"CREATE TABLE items (code TEXT UNIQUE)",
+		nil,
+	); err != nil {
+		t.Fatal(err)
+	}
+	err := svc.EditColumn(ctx, "column-constraint", "items", EditColumnRequest{
+		OriginalName: "code",
+		Name:         "code",
+		Type:         "INTEGER",
+		Nullable:     true,
+	})
+	if err == nil || !strings.Contains(err.Error(), "UNIQUE") {
+		t.Fatalf("error = %v, want unsupported UNIQUE constraint", err)
+	}
+}
+
+func TestEditColumnSupportsQuotedIdentifiers(t *testing.T) {
+	svc := setupTestService(t)
+	ctx := context.Background()
+	if _, err := svc.CreateDatabase(ctx, "column-quoted"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Execute(
+		ctx,
+		"column-quoted",
+		`CREATE TABLE "user-data" ("display-name" TEXT); INSERT INTO "user-data" VALUES ('Ada')`,
+		nil,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.EditColumn(ctx, "column-quoted", "user-data", EditColumnRequest{
+		OriginalName: "display-name",
+		Name:         "display name",
+		Type:         "TEXT",
+		Nullable:     true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := svc.Query(
+		ctx,
+		"column-quoted",
+		`SELECT "display name" FROM "user-data"`,
+		nil,
+		1,
+		0,
+	)
+	if err != nil || len(rows.Rows) != 1 || rows.Rows[0][0] != "Ada" {
+		t.Fatalf("quoted edit result = %+v, error = %v", rows, err)
+	}
+}
+
 func TestQueryWithPagination(t *testing.T) {
 	svc := setupTestService(t)
 	ctx := context.Background()
@@ -422,5 +602,70 @@ func TestExecuteOnNonExistentDB(t *testing.T) {
 	_, err := svc.Execute(ctx, "ghost", "SELECT 1", nil)
 	if err == nil {
 		t.Error("expected error executing on non-existent database")
+	}
+}
+
+func TestEditColumnCanRelaxNullabilityAndRemoveDefault(t *testing.T) {
+	svc := setupTestService(t)
+	ctx := context.Background()
+	if _, err := svc.CreateDatabase(ctx, "column-relax"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Execute(
+		ctx,
+		"column-relax",
+		"CREATE TABLE items (status TEXT NOT NULL DEFAULT 'active'); INSERT INTO items DEFAULT VALUES",
+		nil,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.EditColumn(ctx, "column-relax", "items", EditColumnRequest{
+		OriginalName: "status",
+		Name:         "status",
+		Type:         "TEXT",
+		Nullable:     true,
+		DefaultValue: nil,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	schema, err := svc.GetSchema(ctx, "column-relax")
+	if err != nil {
+		t.Fatal(err)
+	}
+	column := schema[0].Columns[0]
+	if !column.Nullable || column.DefaultValue != "" {
+		t.Fatalf("column = %+v, want nullable without default", column)
+	}
+	if _, err := svc.Execute(ctx, "column-relax", "INSERT INTO items (status) VALUES (NULL)", nil); err != nil {
+		t.Fatalf("nullable column rejected NULL: %v", err)
+	}
+}
+
+func TestEditColumnRestoresForeignKeyMode(t *testing.T) {
+	svc := setupTestService(t)
+	ctx := context.Background()
+	if _, err := svc.CreateDatabase(ctx, "column-fk-mode"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Execute(ctx, "column-fk-mode", "PRAGMA foreign_keys = ON", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Execute(ctx, "column-fk-mode", "CREATE TABLE items (value TEXT)", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.EditColumn(ctx, "column-fk-mode", "items", EditColumnRequest{
+		OriginalName: "value",
+		Name:         "renamed",
+		Type:         "TEXT",
+		Nullable:     true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := svc.Query(ctx, "column-fk-mode", "PRAGMA foreign_keys", nil, 1, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Rows) != 1 || result.Rows[0][0] != "1" {
+		t.Fatalf("foreign key mode = %+v, want enabled", result.Rows)
 	}
 }

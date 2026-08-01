@@ -336,25 +336,40 @@ func (s *HTTPServer) handleTables(w http.ResponseWriter, r *http.Request, dbName
 }
 
 func (s *HTTPServer) handleColumns(w http.ResponseWriter, r *http.Request, dbName, tableName string) {
-	if r.Method != http.MethodPost {
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
 	if tableName == "" {
 		writeError(w, http.StatusBadRequest, "table name required")
 		return
 	}
 
-	var column service.ColumnDefinition
-	if err := json.NewDecoder(r.Body).Decode(&column); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
-		return
+	r.Body = http.MaxBytesReader(w, r.Body, 64*1024)
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	switch r.Method {
+	case http.MethodPost:
+		var column service.ColumnDefinition
+		if err := decoder.Decode(&column); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid request body")
+			return
+		}
+		if err := s.svc.AddColumn(r.Context(), dbName, tableName, column); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusCreated, map[string]bool{"success": true})
+	case http.MethodPut:
+		var req service.EditColumnRequest
+		if err := decoder.Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid request body")
+			return
+		}
+		if err := s.svc.EditColumn(r.Context(), dbName, tableName, req); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]bool{"success": true})
+	default:
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 	}
-	if err := s.svc.AddColumn(r.Context(), dbName, tableName, column); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	writeJSON(w, http.StatusCreated, map[string]bool{"success": true})
 }
 
 func (s *HTTPServer) handleRows(w http.ResponseWriter, r *http.Request, dbName, tableName string) {

@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { api, type ColumnDefinition, type TableInfo } from '../api/client';
+import { api, type ColumnDefinition, type ColumnInfo, type TableInfo } from '../api/client';
 
 interface Props {
   dbName: string;
@@ -29,6 +29,14 @@ const createDraftColumn = (): DraftColumn => ({
   definition: emptyColumn(),
 });
 
+function editableDefault(value: string): string | undefined {
+  if (!value) return undefined;
+  if (value.startsWith("'") && value.endsWith("'")) {
+    return value.slice(1, -1).replaceAll("''", "'");
+  }
+  return value;
+}
+
 export function SchemaViewer({ dbName, tables, selectedTable, onSelectTable, onSchemaChange }: Props) {
   const selected = tables.find((t) => t.Name === selectedTable);
   const [newTableName, setNewTableName] = useState('');
@@ -36,6 +44,8 @@ export function SchemaViewer({ dbName, tables, selectedTable, onSelectTable, onS
   const [newColumn, setNewColumn] = useState<ColumnDefinition>(emptyColumn);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [editingColumn, setEditingColumn] = useState<string | null>(null);
+  const [columnEdit, setColumnEdit] = useState<ColumnDefinition>(emptyColumn);
 
   const save = async (action: () => Promise<unknown>, afterSave: () => void) => {
     setSaving(true);
@@ -103,6 +113,37 @@ export function SchemaViewer({ dbName, tables, selectedTable, onSelectTable, onS
     void save(
       () => api.addColumn(dbName, selected.Name, column),
       () => setNewColumn(emptyColumn()),
+    );
+  };
+
+  const startColumnEdit = (column: ColumnInfo) => {
+    setError(null);
+    setEditingColumn(column.Name);
+    setColumnEdit({
+      Name: column.Name,
+      Type: column.Type || 'BLOB',
+      NotNull: !column.Nullable,
+      PrimaryKey: column.PrimaryKey,
+      DefaultValue: editableDefault(column.DefaultValue),
+    });
+  };
+
+  const handleEditColumn = () => {
+    if (!selected || !editingColumn) return;
+    const name = columnEdit.Name.trim();
+    if (!name) {
+      setError('Enter a field name.');
+      return;
+    }
+    void save(
+      () => api.editColumn(dbName, selected.Name, {
+        OriginalName: editingColumn,
+        Name: name,
+        Type: columnEdit.Type,
+        Nullable: !columnEdit.NotNull,
+        DefaultValue: columnEdit.DefaultValue ?? null,
+      }),
+      () => setEditingColumn(null),
     );
   };
 
@@ -234,16 +275,54 @@ export function SchemaViewer({ dbName, tables, selectedTable, onSelectTable, onS
                   <th>Nullable</th>
                   <th>Default</th>
                   <th>PK</th>
+                  <th aria-label="Actions" />
                 </tr>
               </thead>
               <tbody>
-                {selected.Columns?.map((col) => (
+                {selected.Columns?.map((col) => editingColumn === col.Name ? (
+                  <tr key={col.Name} className="schema-column-edit-row">
+                    <td colSpan={6}>
+                      <div className="schema-column-editor">
+                        <ColumnForm
+                          value={columnEdit}
+                          onChange={setColumnEdit}
+                          disabled={saving}
+                          lockType={col.PrimaryKey}
+                        />
+                        <div className="schema-column-editor-actions">
+                          <button type="button" className="btn-primary" onClick={handleEditColumn} disabled={saving}>
+                            {saving ? 'Saving…' : 'Save changes'}
+                          </button>
+                          <button
+                            type="button"
+                            className="btn-sm"
+                            onClick={() => setEditingColumn(null)}
+                            disabled={saving}
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      </div>
+                    </td>
+                  </tr>
+                ) : (
                   <tr key={col.Name}>
                     <td className="col-name">{col.Name}</td>
                     <td className="col-type-badge">{col.Type}</td>
                     <td>{col.Nullable ? '✓' : '✕'}</td>
                     <td className="col-default">{col.DefaultValue || '—'}</td>
                     <td>{col.PrimaryKey ? '🔑' : ''}</td>
+                    <td>
+                      <button
+                        type="button"
+                        className="btn-sm"
+                        onClick={() => startColumnEdit(col)}
+                        disabled={saving}
+                        aria-label={`Edit field ${col.Name}`}
+                      >
+                        Edit
+                      </button>
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -283,10 +362,17 @@ interface ColumnFormProps {
   value: ColumnDefinition;
   onChange: (value: ColumnDefinition) => void;
   allowPrimaryKey?: boolean;
+  lockType?: boolean;
   disabled: boolean;
 }
 
-function ColumnForm({ value, onChange, allowPrimaryKey = false, disabled }: ColumnFormProps) {
+function ColumnForm({
+  value,
+  onChange,
+  allowPrimaryKey = false,
+  lockType = false,
+  disabled,
+}: ColumnFormProps) {
   const set = (changes: Partial<ColumnDefinition>) => onChange({ ...value, ...changes });
 
   return (
@@ -297,7 +383,11 @@ function ColumnForm({ value, onChange, allowPrimaryKey = false, disabled }: Colu
         placeholder="Field name"
         disabled={disabled}
       />
-      <select value={value.Type} onChange={(event) => set({ Type: event.target.value })} disabled={disabled}>
+      <select
+        value={value.Type}
+        onChange={(event) => set({ Type: event.target.value })}
+        disabled={disabled || lockType}
+      >
         {columnTypes.map((type) => <option key={type}>{type}</option>)}
       </select>
       <input

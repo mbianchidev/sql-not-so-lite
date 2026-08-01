@@ -339,6 +339,18 @@ tr:hover td { background: rgba(122, 162, 247, 0.05); }
 }
 .col-name { font-family: monospace; font-weight: 500; }
 .col-default { font-family: monospace; font-size: 0.75rem; color: var(--text-muted); }
+.schema-column-edit-row td { background: var(--bg-secondary); }
+.schema-column-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+  padding: 0.35rem 0;
+}
+.schema-column-editor-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.45rem;
+}
 
 .sql-editor { display: flex; flex-direction: column; gap: 0.75rem; }
 

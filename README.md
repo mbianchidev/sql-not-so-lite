@@ -185,6 +185,7 @@ grpcurl -plaintext -d '{"database":"myapp","sql":"SELECT * FROM users","limit":1
 | POST | `/api/databases/:name/tables` | Create a table with its initial fields |
 | GET | `/api/databases/:name/tables/:table?limit=N&offset=N` | Table data |
 | POST | `/api/databases/:name/tables/:table/columns` | Add a field to an existing table |
+| PUT | `/api/databases/:name/tables/:table/columns` | Edit a field's name, type, nullability, and default |
 | POST | `/api/databases/:name/tables/:table/rows` | Insert a row with explicit values, NULLs, or field defaults |
 | POST | `/api/databases/:name/query` | Execute SQL `{"sql":"..."}` |
 | GET | `/api/health` | Health check |
@@ -206,7 +207,7 @@ Access at `http://localhost:9147` when the daemon is running.
 
 - **Sidebar**: Lists all databases with active/idle status
 - **Table Browser**: Browse rows and add records with explicit values, NULLs, or field defaults
-- **Schema Viewer**: Create tables, reorder fields before creation, and inspect column types, constraints, indexes, and foreign keys
+- **Schema Viewer**: Create tables, reorder fields before creation, and edit existing field names, types, nullability, and defaults
 - **SQL Editor**: Monaco-based with syntax highlighting and Ctrl+Enter execution
 - **Results**: Sortable table with CSV/JSON export
 - **Dark/Light theme**: Toggle in header
@@ -214,6 +215,8 @@ Access at `http://localhost:9147` when the daemon is running.
 - **Replication status**: Live indicators for replication state per database
 - **Schema timeline**: Version history viewer with schema transition diffs
 - **Snapshot restore**: One-click restore from any available snapshot
+
+Field edits rebuild the table in one transaction while preserving column order, data, indexes, and triggers. The editor rejects schemas with constraints it cannot safely reconstruct instead of silently dropping them.
 
 ## Database Discovery & Replication
 

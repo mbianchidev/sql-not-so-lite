@@ -53,6 +53,14 @@ export interface ColumnDefinition {
   DefaultValue?: string;
 }
 
+export interface EditColumnRequest {
+  OriginalName: string;
+  Name: string;
+  Type: string;
+  Nullable: boolean;
+  DefaultValue: string | null;
+}
+
 export interface StatsInfo {
   version: string;
   uptime_seconds: number;
@@ -258,6 +266,15 @@ export const api = {
       {
       method: 'POST',
       body: JSON.stringify(column),
+      },
+    ),
+
+  editColumn: (dbName: string, table: string, column: EditColumnRequest) =>
+    request<{ success: boolean }>(
+      `/api/databases/${encodeURIComponent(dbName)}/tables/${encodeURIComponent(table)}/columns`,
+      {
+        method: 'PUT',
+        body: JSON.stringify(column),
       },
     ),
 
