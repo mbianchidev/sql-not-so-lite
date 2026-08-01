@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -20,13 +21,16 @@ import (
 )
 
 type Daemon struct {
-	cfg         *config.Config
-	manager     *store.Manager
-	svc         *service.DatabaseService
-	grpcServer  *server.GRPCServer
-	httpServer  *server.HTTPServer
-	idleTracker *idle.Tracker
-	catalog     *catalog.Catalog
+	cfg          *config.Config
+	manager      *store.Manager
+	svc          *service.DatabaseService
+	grpcServer   *server.GRPCServer
+	httpServer   *server.HTTPServer
+	idleTracker  *idle.Tracker
+	catalog      *catalog.Catalog
+	scanInterval time.Duration
+	scanCancel   context.CancelFunc
+	scanDone     chan struct{}
 }
 
 func New(cfg *config.Config) (*Daemon, error) {
@@ -51,6 +55,7 @@ func New(cfg *config.Config) (*Daemon, error) {
 	}
 
 	tracker := idle.NewTracker(manager, connTimeout, checkInterval)
+	scanInterval := parseScanInterval(cfg.Scanner.ScanInterval)
 
 	cat, err := catalog.Open(cfg.Server.DataDir)
 	if err != nil {
@@ -58,13 +63,14 @@ func New(cfg *config.Config) (*Daemon, error) {
 	}
 
 	return &Daemon{
-		cfg:         cfg,
-		manager:     manager,
-		svc:         svc,
-		grpcServer:  server.NewGRPCServer(svc, cfg.Server.GRPCPort),
-		httpServer:  server.NewHTTPServer(svc, cfg.Server.HTTPPort, cat, cfg),
-		idleTracker: tracker,
-		catalog:     cat,
+		cfg:          cfg,
+		manager:      manager,
+		svc:          svc,
+		grpcServer:   server.NewGRPCServer(svc, cfg.Server.GRPCPort),
+		httpServer:   server.NewHTTPServer(svc, cfg.Server.HTTPPort, cat, cfg),
+		idleTracker:  tracker,
+		catalog:      cat,
+		scanInterval: scanInterval,
 	}, nil
 }
 
@@ -79,8 +85,22 @@ func (d *Daemon) Run() error {
 	log.Printf("  gRPC port: %d", d.cfg.Server.GRPCPort)
 	log.Printf("  HTTP port: %d", d.cfg.Server.HTTPPort)
 	log.Printf("  catalog:   %s/catalog.sqlite", d.cfg.Server.DataDir)
+	log.Printf("  scan interval: %s", d.scanInterval)
 
 	d.idleTracker.Start()
+	scanCtx, scanCancel := context.WithCancel(context.Background())
+	d.scanCancel = scanCancel
+	d.scanDone = make(chan struct{})
+	go func() {
+		defer close(d.scanDone)
+		runPeriodicScanner(scanCtx, d.scanInterval, func(ctx context.Context) (int, error) {
+			result, err := d.httpServer.Scan(ctx, nil)
+			if err != nil {
+				return 0, err
+			}
+			return result.Scanned, nil
+		})
+	}()
 
 	errCh := make(chan error, 2)
 
@@ -112,6 +132,10 @@ func (d *Daemon) Run() error {
 func (d *Daemon) Shutdown() error {
 	log.Println("Shutting down...")
 
+	if d.scanCancel != nil {
+		d.scanCancel()
+		<-d.scanDone
+	}
 	d.idleTracker.Stop()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -131,6 +155,46 @@ func (d *Daemon) Shutdown() error {
 
 	log.Println("Shutdown complete")
 	return nil
+}
+
+func parseScanInterval(value string) time.Duration {
+	interval, err := time.ParseDuration(value)
+	if err == nil && interval > 0 {
+		return interval
+	}
+
+	fallback, _ := time.ParseDuration(config.DefaultScanInterval)
+	log.Printf("Warning: invalid scanner.scan_interval %q; using %s", value, config.DefaultScanInterval)
+	return fallback
+}
+
+func runPeriodicScanner(
+	ctx context.Context,
+	interval time.Duration,
+	scan func(context.Context) (int, error),
+) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if ctx.Err() != nil {
+				return
+			}
+			count, err := scan(ctx)
+			switch {
+			case errors.Is(err, server.ErrScanInProgress):
+				log.Printf("Scheduled discovery scan skipped: %v", err)
+			case err != nil:
+				log.Printf("Scheduled discovery scan failed: %v", err)
+			default:
+				log.Printf("Scheduled discovery scan complete: %d database(s) found", count)
+			}
+		}
+	}
 }
 
 func (d *Daemon) Catalog() *catalog.Catalog { return d.catalog }

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -15,6 +16,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/mbianchidev/sql-not-so-lite/internal/catalog"
@@ -29,21 +31,47 @@ import (
 var staticFiles embed.FS
 
 type HTTPServer struct {
-	svc       *service.DatabaseService
-	server    *http.Server
-	port      int
-	startTime time.Time
-	catalog   *catalog.Catalog
-	cfg       *config.Config
+	svc        *service.DatabaseService
+	server     *http.Server
+	port       int
+	startTime  time.Time
+	catalog    *catalog.Catalog
+	cfg        *config.Config
+	scanMu     sync.Mutex
+	scanCtx    context.Context
+	scanCancel context.CancelFunc
+}
+
+var (
+	ErrScanInProgress  = errors.New("scan already in progress")
+	ErrInvalidScanPath = errors.New("invalid scan path")
+)
+
+type ScanFileResult struct {
+	ID            int64  `json:"id"`
+	Name          string `json:"name"`
+	SourcePath    string `json:"source_path"`
+	SizeBytes     int64  `json:"size_bytes"`
+	SQLiteVersion string `json:"sqlite_version"`
+	Priority      string `json:"priority"`
+	GitHubRepo    string `json:"github_repo"`
+}
+
+type ScanResult struct {
+	Scanned int              `json:"scanned"`
+	Files   []ScanFileResult `json:"files"`
 }
 
 func NewHTTPServer(svc *service.DatabaseService, port int, cat *catalog.Catalog, cfg *config.Config) *HTTPServer {
+	scanCtx, scanCancel := context.WithCancel(context.Background())
 	return &HTTPServer{
-		svc:       svc,
-		port:      port,
-		startTime: time.Now(),
-		catalog:   cat,
-		cfg:       cfg,
+		svc:        svc,
+		port:       port,
+		startTime:  time.Now(),
+		catalog:    cat,
+		cfg:        cfg,
+		scanCtx:    scanCtx,
+		scanCancel: scanCancel,
 	}
 }
 
@@ -81,6 +109,11 @@ func (s *HTTPServer) Start() error {
 }
 
 func (s *HTTPServer) Stop(ctx context.Context) error {
+	if s.scanCancel != nil {
+		s.scanCancel()
+		s.scanMu.Lock()
+		s.scanMu.Unlock()
+	}
 	if s.server != nil {
 		return s.server.Shutdown(ctx)
 	}
@@ -452,7 +485,47 @@ func (s *HTTPServer) handleScan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	roots := req.Paths
+	result, err := s.Scan(r.Context(), req.Paths)
+	if err != nil {
+		switch {
+		case errors.Is(err, ErrScanInProgress):
+			writeError(w, http.StatusConflict, err.Error())
+		case errors.Is(err, ErrInvalidScanPath):
+			writeError(w, http.StatusBadRequest, err.Error())
+		case errors.Is(err, context.Canceled):
+			writeError(w, http.StatusRequestTimeout, "scan cancelled")
+		default:
+			writeError(w, http.StatusInternalServerError, err.Error())
+		}
+		return
+	}
+
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (s *HTTPServer) Scan(ctx context.Context, requestedRoots []string) (*ScanResult, error) {
+	if !s.scanMu.TryLock() {
+		return nil, ErrScanInProgress
+	}
+	defer s.scanMu.Unlock()
+
+	if s.scanCtx != nil {
+		if err := s.scanCtx.Err(); err != nil {
+			return nil, err
+		}
+		scanCtx, cancel := context.WithCancel(ctx)
+		stopCancel := context.AfterFunc(s.scanCtx, cancel)
+		defer func() {
+			stopCancel()
+			cancel()
+		}()
+		ctx = scanCtx
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	roots := requestedRoots
 	if len(roots) == 0 {
 		roots = []string{s.cfg.Scanner.ScanRoot}
 	}
@@ -463,8 +536,7 @@ func (s *HTTPServer) handleScan(w http.ResponseWriter, r *http.Request) {
 	for _, requestedRoot := range roots {
 		root, err := resolveScanPath(requestedRoot, s.cfg.Scanner.ScanRoot)
 		if err != nil {
-			writeError(w, http.StatusBadRequest, err.Error())
-			return
+			return nil, fmt.Errorf("%w: %v", ErrInvalidScanPath, err)
 		}
 		if _, seen := seenRoots[root]; seen {
 			continue
@@ -477,10 +549,9 @@ func (s *HTTPServer) handleScan(w http.ResponseWriter, r *http.Request) {
 			scanCfg,
 			s.cfg.Server.DataDir,
 			s.cfg.Replicator.SnapshotDir,
-		).Scan()
+		).ScanContext(ctx)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, fmt.Sprintf("scan failed for %s: %v", root, err))
-			return
+			return nil, fmt.Errorf("scan failed for %s: %w", root, err)
 		}
 		for _, file := range rootFiles {
 			if _, seen := seenFiles[file.Path]; seen {
@@ -491,8 +562,12 @@ func (s *HTTPServer) handleScan(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	results := make([]map[string]interface{}, 0, len(files))
+	results := make([]ScanFileResult, 0, len(files))
 	for _, f := range files {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+
 		// Check if this DB already exists to preserve its status
 		existing, _ := s.catalog.GetDiscoveredByPath(f.Path)
 		status := "discovered"
@@ -518,21 +593,18 @@ func (s *HTTPServer) handleScan(w http.ResponseWriter, r *http.Request) {
 			log.Printf("scan: failed to upsert %s: %v", f.Path, err)
 			continue
 		}
-		results = append(results, map[string]interface{}{
-			"id":             id,
-			"name":           d.Name,
-			"source_path":    f.Path,
-			"size_bytes":     f.SizeBytes,
-			"sqlite_version": f.SQLiteVersion,
-			"priority":       f.Priority,
-			"github_repo":    f.GitHubRepo,
+		results = append(results, ScanFileResult{
+			ID:            id,
+			Name:          d.Name,
+			SourcePath:    f.Path,
+			SizeBytes:     f.SizeBytes,
+			SQLiteVersion: f.SQLiteVersion,
+			Priority:      f.Priority,
+			GitHubRepo:    f.GitHubRepo,
 		})
 	}
 
-	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"scanned": len(results),
-		"files":   results,
-	})
+	return &ScanResult{Scanned: len(results), Files: results}, nil
 }
 
 func resolveScanPath(path, configuredRoot string) (string, error) {

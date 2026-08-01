@@ -117,7 +117,7 @@ file = "~/.sql-not-so-lite/sqnsl.log"
 scan_root = "~/"
 file_extensions = [".sqlite", ".db", ".sqlite3", ".sqlitedb"]
 exclude_patterns = ["node_modules", ".git/objects", "*.tmp"]
-scan_interval = "1h"
+scan_interval = "30m"
 
 [replicator]
 enabled = true
@@ -218,7 +218,7 @@ Access at `http://localhost:9147` when the daemon is running.
 
 The scanner walks `$HOME` (configurable via `scan_root`) looking for SQLite files. Each candidate is validated by checking the first 16 bytes for the SQLite magic header (`SQLite format 3\000`). Discovered databases are recorded in an internal catalog (`catalog.sqlite`) with metadata like path, size, modification time, and priority tier.
 
-Scanning runs on a configurable interval (`scan_interval`) and can also be triggered on-demand via `sqnsl scan` or `POST /api/scan`.
+Scanning runs every 30 minutes by default. Set `scanner.scan_interval` in `~/.sql-not-so-lite/config.toml` to any Go duration such as `"15m"` or `"2h"`. Scans can also be triggered on-demand via `sqnsl scan` or `POST /api/scan`.
 
 ### Priority tiers
 

@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -44,7 +45,7 @@ func newScanTestServer(t *testing.T, scanRoot string) *HTTPServer {
 
 	cfg := config.DefaultConfig()
 	cfg.Scanner.ScanRoot = scanRoot
-	return &HTTPServer{catalog: cat, cfg: cfg}
+	return NewHTTPServer(nil, 0, cat, cfg)
 }
 
 func createHTTPTestDatabase(t *testing.T, path string) {
@@ -270,12 +271,37 @@ func TestHandleScanRejectsMissingPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("encode request: %v", err)
 	}
+
 	req := httptest.NewRequest(http.MethodPost, "/api/scan", bytes.NewReader(body))
 	rec := httptest.NewRecorder()
 	server.handleScan(rec, req)
 
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected status %d, got %d: %s", http.StatusBadRequest, rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleScanRejectsOverlappingScan(t *testing.T) {
+	server := newScanTestServer(t, t.TempDir())
+	server.scanMu.Lock()
+	defer server.scanMu.Unlock()
+
+	req := httptest.NewRequest(http.MethodPost, "/api/scan", nil)
+	rec := httptest.NewRecorder()
+	server.handleScan(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusConflict, rec.Code, rec.Body.String())
+	}
+}
+
+func TestScanStopsAfterServerCancellation(t *testing.T) {
+	server := newScanTestServer(t, t.TempDir())
+	server.scanCancel()
+
+	_, err := server.Scan(context.Background(), nil)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Scan error = %v, want context.Canceled", err)
 	}
 }
 

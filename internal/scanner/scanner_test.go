@@ -1,7 +1,9 @@
 package scanner
 
 import (
+	"context"
 	"database/sql"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -9,6 +11,16 @@ import (
 	"github.com/mbianchidev/sql-not-so-lite/internal/config"
 	_ "modernc.org/sqlite"
 )
+
+func TestScanContextStopsWhenCancelled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := New(config.ScannerConfig{ScanRoot: t.TempDir()}).ScanContext(ctx)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("ScanContext error = %v, want context.Canceled", err)
+	}
+}
 
 func createTestDB(t *testing.T, path string) {
 	t.Helper()

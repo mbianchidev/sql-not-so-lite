@@ -30,9 +30,9 @@ type IdleConfig struct {
 }
 
 type LimitsConfig struct {
-	MaxDatabases int   `toml:"max_databases"`
-	MaxQuerySize int64 `toml:"max_query_size"`
-	MaxResultRows int  `toml:"max_result_rows"`
+	MaxDatabases  int   `toml:"max_databases"`
+	MaxQuerySize  int64 `toml:"max_query_size"`
+	MaxResultRows int   `toml:"max_result_rows"`
 }
 
 type LogConfig struct {
@@ -60,6 +60,8 @@ type ReplicatorConfig struct {
 	SnapshotDir       string `toml:"snapshot_dir"`
 }
 
+const DefaultScanInterval = "30m"
+
 func defaultScannerConfig(homeDir string) ScannerConfig {
 	return ScannerConfig{
 		ScanRoot:               homeDir,
@@ -74,7 +76,7 @@ func defaultScannerConfig(homeDir string) ScannerConfig {
 			filepath.Join(homeDir, ".local"),
 		},
 		AppDataDotdirPattern: filepath.Join(homeDir, ".{repo-name}", "data"),
-		ScanInterval:         "1h",
+		ScanInterval:         DefaultScanInterval,
 	}
 }
 

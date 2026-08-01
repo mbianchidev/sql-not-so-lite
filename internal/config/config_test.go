@@ -35,3 +35,9 @@ func TestLoadAppliesEnvironmentOverridesWithoutConfigFile(t *testing.T) {
 		t.Fatalf("workspace paths %v do not include %q", cfg.Scanner.PriorityPathsWorkspace, projects)
 	}
 }
+
+func TestDefaultScanInterval(t *testing.T) {
+	if got := DefaultConfig().Scanner.ScanInterval; got != DefaultScanInterval {
+		t.Fatalf("scan interval = %q, want %q", got, DefaultScanInterval)
+	}
+}

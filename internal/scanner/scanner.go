@@ -2,6 +2,7 @@ package scanner
 
 import (
 	"bufio"
+	"context"
 	"encoding/binary"
 	"fmt"
 	"io/fs"
@@ -58,9 +59,16 @@ func New(cfg config.ScannerConfig, excludedDirs ...string) *Scanner {
 }
 
 func (s *Scanner) Scan() ([]DiscoveredFile, error) {
+	return s.ScanContext(context.Background())
+}
+
+func (s *Scanner) ScanContext(ctx context.Context) ([]DiscoveredFile, error) {
 	var results []DiscoveredFile
 
 	err := filepath.WalkDir(s.cfg.ScanRoot, func(path string, d fs.DirEntry, err error) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if err != nil {
 			if path == s.cfg.ScanRoot {
 				return err
