@@ -23,8 +23,9 @@ function formatSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-function statusClass(status: string, isReplica: boolean): string {
+function statusClass(status: string, isReplica: boolean, available: boolean): string {
   if (isReplica) return 'replica';
+  if (!available) return 'missing';
   switch (status) {
     case 'replicating': return 'replicating';
     case 'paused': return 'paused';
@@ -33,8 +34,9 @@ function statusClass(status: string, isReplica: boolean): string {
   }
 }
 
-function statusLabel(status: string, isReplica: boolean): string {
+function statusLabel(status: string, isReplica: boolean, available: boolean): string {
   if (isReplica) return 'Replica';
+  if (!available) return 'Missing';
   switch (status) {
     case 'replicating': return 'Replicating';
     case 'paused': return 'Paused';
@@ -123,6 +125,18 @@ export function DiscoveredPanel({ selectedId, onSelect }: Props) {
     }
   };
 
+  const handleFavorite = async (id: number, favorite: boolean) => {
+    try {
+      setActionLoading(id);
+      await api.updateFavorite(id, favorite);
+      await refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to update favorite');
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
   const handleRestore = async (id: number, name: string) => {
     if (!confirm(`Restore database "${name}"? This will overwrite the file at its original source path.`)) return;
     try {
@@ -164,6 +178,8 @@ export function DiscoveredPanel({ selectedId, onSelect }: Props) {
       db.SQLiteVersion,
       db.JournalMode,
       db.IsReplica ? 'replica' : '',
+      db.Favorite ? 'favorite' : '',
+      db.Available ? '' : 'missing',
     ].some((value) => value?.toLocaleLowerCase().includes(query)));
   }, [databases, searchQuery]);
 
@@ -227,14 +243,27 @@ export function DiscoveredPanel({ selectedId, onSelect }: Props) {
         {filteredDatabases.map((db) => (
           <div
             key={db.ID}
-            className={`discovered-item ${selectedId === db.ID ? 'active' : ''}`}
+            className={`discovered-item ${selectedId === db.ID ? 'active' : ''} ${db.Available ? '' : 'missing'}`}
             onClick={() => onSelect(selectedId === db.ID ? null : db.ID)}
           >
             <div className="discovered-item-header">
-              <span className={`status-indicator ${statusClass(db.Status, db.IsReplica)}`} />
+              <span className={`status-indicator ${statusClass(db.Status, db.IsReplica, db.Available)}`} />
               <span className="discovered-name">{db.Name}</span>
+              <button
+                type="button"
+                className={`favorite-toggle ${db.Favorite ? 'active' : ''}`}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  void handleFavorite(db.ID, !db.Favorite);
+                }}
+                disabled={actionLoading === db.ID}
+                aria-label={db.Favorite ? `Remove ${db.Name} from favorites` : `Add ${db.Name} to favorites`}
+                title={db.Favorite ? 'Remove from favorites' : 'Add to favorites'}
+              >
+                {db.Favorite ? '★' : '☆'}
+              </button>
               <span className={`discovered-status-label ${db.IsReplica ? 'replica' : ''}`}>
-                {statusLabel(db.Status, db.IsReplica)}
+                {statusLabel(db.Status, db.IsReplica, db.Available)}
               </span>
               <span className={`priority-badge priority-${db.Priority}`}>
                 {PRIORITY_LABELS[db.Priority] ?? db.Priority}
@@ -271,7 +300,7 @@ export function DiscoveredPanel({ selectedId, onSelect }: Props) {
             </div>
 
             <div className="discovered-item-actions">
-              {!db.IsReplica && (db.Status === 'discovered' || db.Status === 'paused' || db.Status === 'error') && (
+              {db.Available && !db.IsReplica && (db.Status === 'discovered' || db.Status === 'paused' || db.Status === 'error') && (
                 <button
                   className="btn-sm"
                   onClick={(e) => { e.stopPropagation(); handleReplicate(db.ID); }}
@@ -289,7 +318,7 @@ export function DiscoveredPanel({ selectedId, onSelect }: Props) {
                   ⏸ Stop
                 </button>
               )}
-              {(db.Status === 'replicating' || db.Status === 'paused') && (
+              {db.Available && (db.Status === 'replicating' || db.Status === 'paused') && (
                 <button
                   className="btn-sm"
                   onClick={(e) => { e.stopPropagation(); handleRestore(db.ID, db.Name); }}

@@ -644,6 +644,10 @@ tr:hover td { background: rgba(122, 162, 247, 0.05); }
   border-color: var(--accent);
   background: var(--bg-tertiary);
 }
+.discovered-item.missing {
+  border-style: dashed;
+  opacity: 0.72;
+}
 
 .discovered-item-header {
   display: flex;
@@ -653,6 +657,26 @@ tr:hover td { background: rgba(122, 162, 247, 0.05); }
 }
 
 .discovered-name { font-weight: 600; font-size: 0.9rem; }
+
+.favorite-toggle {
+  width: 1.5rem;
+  height: 1.5rem;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 1rem;
+  line-height: 1;
+}
+.favorite-toggle:hover,
+.favorite-toggle.active {
+  color: #e0af68;
+}
+.favorite-toggle:disabled {
+  cursor: wait;
+  opacity: 0.45;
+}
 
 .discovered-item-meta {
   margin-bottom: 0.3rem;
@@ -755,6 +779,10 @@ tr:hover td { background: rgba(122, 162, 247, 0.05); }
 }
 .status-indicator.paused { background: var(--warning); }
 .status-indicator.error { background: var(--danger); }
+.status-indicator.missing {
+  background: transparent;
+  border: 1px solid var(--text-muted);
+}
 .status-indicator.replica {
   background: #bb9af7;
   box-shadow: 0 0 0 3px rgba(187, 154, 247, 0.18);

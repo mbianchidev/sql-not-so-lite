@@ -29,6 +29,8 @@ type scanResponse struct {
 type discoveredResponse struct {
 	ID        int64 `json:"id"`
 	IsReplica bool  `json:"is_replica"`
+	Favorite  bool  `json:"favorite"`
+	Available bool  `json:"available"`
 }
 
 func newScanTestServer(t *testing.T, scanRoot string) *HTTPServer {
@@ -54,11 +56,7 @@ func createHTTPTestDatabase(t *testing.T, path string) {
 	if err != nil {
 		t.Fatalf("open test database: %v", err)
 	}
-	t.Cleanup(func() {
-		if err := db.Close(); err != nil {
-			t.Errorf("close test database: %v", err)
-		}
-	})
+	defer db.Close()
 	if _, err := db.Exec("CREATE TABLE test (id INTEGER PRIMARY KEY, value TEXT)"); err != nil {
 		t.Fatalf("create test table: %v", err)
 	}
@@ -130,6 +128,168 @@ func TestHandleScanUsesConfiguredRootRecursively(t *testing.T) {
 	expectedPath := resolvedHTTPTestPath(t, dbPath)
 	if response.Files[0].SourcePath != expectedPath {
 		t.Fatalf("source path = %q, want %q", response.Files[0].SourcePath, expectedPath)
+	}
+}
+
+func TestRepeatedScanPreservesFavoriteAndTracksAvailability(t *testing.T) {
+	scanRoot := t.TempDir()
+	dbPath := filepath.Join(scanRoot, "favorite.sqlite")
+	createHTTPTestDatabase(t, dbPath)
+	server := newScanTestServer(t, scanRoot)
+
+	if _, err := server.Scan(context.Background(), nil); err != nil {
+		t.Fatal(err)
+	}
+	resolvedPath := resolvedHTTPTestPath(t, dbPath)
+	discovered, err := server.catalog.GetDiscoveredByPath(resolvedPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := server.catalog.UpdateFavorite(discovered.ID, true); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.Remove(dbPath); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := server.Scan(context.Background(), nil); err != nil {
+		t.Fatal(err)
+	}
+	missing, err := server.catalog.GetDiscovered(discovered.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !missing.Favorite || missing.Available {
+		t.Fatalf("missing database = %+v, want favorite and unavailable", missing)
+	}
+
+	createHTTPTestDatabase(t, dbPath)
+	if _, err := server.Scan(context.Background(), nil); err != nil {
+		t.Fatal(err)
+	}
+	restored, err := server.catalog.GetDiscovered(discovered.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !restored.Favorite || !restored.Available {
+		t.Fatalf("restored database = %+v, want favorite and available", restored)
+	}
+}
+
+func TestScanOnlyChecksAvailabilityInsideRequestedRoots(t *testing.T) {
+	firstRoot := t.TempDir()
+	secondRoot := t.TempDir()
+	firstPath := filepath.Join(firstRoot, "first.sqlite")
+	secondPath := filepath.Join(secondRoot, "second.sqlite")
+	createHTTPTestDatabase(t, firstPath)
+	createHTTPTestDatabase(t, secondPath)
+	server := newScanTestServer(t, firstRoot)
+
+	if _, err := server.Scan(context.Background(), []string{firstRoot, secondRoot}); err != nil {
+		t.Fatal(err)
+	}
+	second, err := server.catalog.GetDiscoveredByPath(resolvedHTTPTestPath(t, secondPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(secondPath); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := server.Scan(context.Background(), []string{firstRoot}); err != nil {
+		t.Fatal(err)
+	}
+	unchanged, err := server.catalog.GetDiscovered(second.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !unchanged.Available {
+		t.Fatal("database outside requested roots was marked unavailable")
+	}
+}
+
+func TestScanConfirmsFilteredExistingDatabaseByStat(t *testing.T) {
+	scanRoot := t.TempDir()
+	excludedDir := filepath.Join(scanRoot, "node_modules")
+	if err := os.MkdirAll(excludedDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	dbPath := filepath.Join(excludedDir, "filtered.sqlite")
+	createHTTPTestDatabase(t, dbPath)
+	server := newScanTestServer(t, scanRoot)
+	resolvedPath := resolvedHTTPTestPath(t, dbPath)
+	id, err := server.catalog.UpsertDiscovered(&catalog.DiscoveredDB{
+		Name:       "filtered",
+		SourcePath: resolvedPath,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := server.catalog.UpdateAvailability(id, false); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := server.Scan(context.Background(), nil); err != nil {
+		t.Fatal(err)
+	}
+	got, err := server.catalog.GetDiscovered(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Available {
+		t.Fatal("existing filtered database was not confirmed available")
+	}
+}
+
+func TestHandleDiscoveredPatchFavorite(t *testing.T) {
+	server := newScanTestServer(t, t.TempDir())
+	id, err := server.catalog.UpsertDiscovered(&catalog.DiscoveredDB{
+		Name:       "favorite",
+		SourcePath: "/favorite.sqlite",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(
+		http.MethodPatch,
+		"/api/discovered/1",
+		bytes.NewBufferString(`{"favorite":true}`),
+	)
+	rec := httptest.NewRecorder()
+
+	server.handleDiscoveredGet(rec, req, id)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	got, err := server.catalog.GetDiscovered(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Favorite {
+		t.Fatal("favorite was not updated")
+	}
+}
+
+func TestHandleDiscoveredPatchRejectsInvalidBody(t *testing.T) {
+	server := newScanTestServer(t, t.TempDir())
+	id, err := server.catalog.UpsertDiscovered(&catalog.DiscoveredDB{
+		Name:       "favorite",
+		SourcePath: "/favorite.sqlite",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(
+		http.MethodPatch,
+		"/api/discovered/1",
+		bytes.NewBufferString(`{"favorite":"yes"}`),
+	)
+	rec := httptest.NewRecorder()
+
+	server.handleDiscoveredGet(rec, req, id)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
 	}
 }
 

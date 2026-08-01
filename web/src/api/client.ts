@@ -77,6 +77,8 @@ export interface DiscoveredDB {
   GitHubURL: string;
   Priority: string;
   IsReplica: boolean;
+  Favorite: boolean;
+  Available: boolean;
 }
 
 export interface SnapshotInfo {
@@ -118,6 +120,8 @@ interface RawDiscoveredDB {
   github_url: string;
   priority: string;
   is_replica: boolean;
+  favorite: boolean;
+  available: boolean;
 }
 
 interface RawSnapshotInfo {
@@ -175,6 +179,8 @@ function toDiscoveredDB(db: RawDiscoveredDB): DiscoveredDB {
     GitHubURL: db.github_url,
     Priority: db.priority,
     IsReplica: db.is_replica,
+    Favorite: db.favorite,
+    Available: db.available,
   };
 }
 
@@ -290,6 +296,11 @@ export const api = {
     toDiscoveredDB(await request<RawDiscoveredDB>(`/api/discovered/${id}`)),
   deleteDiscovered: (id: number) =>
     request<{ success: boolean }>(`/api/discovered/${id}`, { method: 'DELETE' }),
+  updateFavorite: (id: number, favorite: boolean) =>
+    request<{ success: boolean; favorite: boolean }>(`/api/discovered/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ favorite }),
+    }),
   startReplication: (id: number) => request<{ success: boolean }>(`/api/discovered/${id}/replicate`, { method: 'POST' }),
   stopReplication: (id: number) => request<{ success: boolean }>(`/api/discovered/${id}/replicate`, { method: 'DELETE' }),
   restoreSnapshot: (id: number, version?: number) =>

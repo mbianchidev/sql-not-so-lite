@@ -140,7 +140,7 @@ func spaHandler(fileServer http.Handler, staticFS fs.FS) http.Handler {
 func (s *HTTPServer) corsMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
 
 		if r.Method == http.MethodOptions {
@@ -562,6 +562,7 @@ func (s *HTTPServer) Scan(ctx context.Context, requestedRoots []string) (*ScanRe
 	files := make([]scanner.DiscoveredFile, 0)
 	seenRoots := make(map[string]struct{}, len(roots))
 	seenFiles := make(map[string]struct{})
+	resolvedRoots := make([]string, 0, len(roots))
 	for _, requestedRoot := range roots {
 		root, err := resolveScanPath(requestedRoot, s.cfg.Scanner.ScanRoot)
 		if err != nil {
@@ -571,6 +572,7 @@ func (s *HTTPServer) Scan(ctx context.Context, requestedRoots []string) (*ScanRe
 			continue
 		}
 		seenRoots[root] = struct{}{}
+		resolvedRoots = append(resolvedRoots, root)
 
 		scanCfg := s.cfg.Scanner
 		scanCfg.ScanRoot = root
@@ -617,9 +619,17 @@ func (s *HTTPServer) Scan(ctx context.Context, requestedRoots []string) (*ScanRe
 			Priority:      f.Priority,
 			Status:        status,
 		}
-		id, err := s.catalog.UpsertDiscovered(d)
+		var id int64
+		var err error
+		if existing != nil && discoveredMetadataMatches(existing, &f) {
+			id = existing.ID
+			d.Name = existing.Name
+			err = s.catalog.UpdateAvailability(id, true)
+		} else {
+			id, err = s.catalog.UpsertDiscovered(d)
+		}
 		if err != nil {
-			log.Printf("scan: failed to upsert %s: %v", f.Path, err)
+			log.Printf("scan: failed to update %s: %v", f.Path, err)
 			continue
 		}
 		results = append(results, ScanFileResult{
@@ -633,7 +643,54 @@ func (s *HTTPServer) Scan(ctx context.Context, requestedRoots []string) (*ScanRe
 		})
 	}
 
+	discovered, err := s.catalog.ListDiscovered()
+	if err != nil {
+		return nil, fmt.Errorf("list discovered databases: %w", err)
+	}
+	for i := range discovered {
+		db := &discovered[i]
+		if !pathWithinAnyRoot(db.SourcePath, resolvedRoots) {
+			continue
+		}
+		_, statErr := os.Stat(db.SourcePath)
+		switch {
+		case statErr == nil:
+			if err := s.catalog.UpdateAvailability(db.ID, true); err != nil {
+				log.Printf("scan: failed to confirm %s: %v", db.SourcePath, err)
+			}
+		case errors.Is(statErr, os.ErrNotExist):
+			if err := s.catalog.UpdateAvailability(db.ID, false); err != nil {
+				log.Printf("scan: failed to mark missing %s: %v", db.SourcePath, err)
+			}
+		default:
+			log.Printf("scan: failed to check %s: %v", db.SourcePath, statErr)
+		}
+	}
+
 	return &ScanResult{Scanned: len(results), Files: results}, nil
+}
+
+func discoveredMetadataMatches(existing *catalog.DiscoveredDB, file *scanner.DiscoveredFile) bool {
+	return existing.SizeBytes == file.SizeBytes &&
+		existing.LastModified.Format(time.RFC3339) == file.LastModified.Format(time.RFC3339) &&
+		existing.SQLiteVersion == file.SQLiteVersion &&
+		existing.PageSize == file.PageSize &&
+		existing.JournalMode == file.JournalMode &&
+		existing.GitHubRepo == file.GitHubRepo &&
+		existing.GitHubURL == file.GitHubURL &&
+		existing.Priority == file.Priority
+}
+
+func pathWithinAnyRoot(path string, roots []string) bool {
+	cleanPath := filepath.Clean(path)
+	for _, root := range roots {
+		cleanRoot := filepath.Clean(root)
+		if cleanPath == cleanRoot ||
+			strings.HasPrefix(cleanPath, cleanRoot+string(filepath.Separator)) {
+			return true
+		}
+	}
+	return false
 }
 
 func resolveScanPath(path, configuredRoot string) (string, error) {
@@ -756,6 +813,34 @@ func (s *HTTPServer) handleDiscoveredGet(w http.ResponseWriter, r *http.Request,
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]bool{"success": true})
+
+	case http.MethodPatch:
+		var req struct {
+			Favorite *bool `json:"favorite"`
+		}
+		r.Body = http.MaxBytesReader(w, r.Body, 64*1024)
+		decoder := json.NewDecoder(r.Body)
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid request body: %v", err))
+			return
+		}
+		if req.Favorite == nil {
+			writeError(w, http.StatusBadRequest, "favorite is required")
+			return
+		}
+		if err := s.catalog.UpdateFavorite(id, *req.Favorite); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				writeError(w, http.StatusNotFound, "database not found")
+				return
+			}
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]bool{
+			"success":  true,
+			"favorite": *req.Favorite,
+		})
 
 	default:
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -1057,6 +1142,8 @@ func discoveredToJSON(d *catalog.DiscoveredDB, replicaDir string) map[string]int
 		"github_repo":    d.GitHubRepo,
 		"github_url":     d.GitHubURL,
 		"error_message":  d.ErrorMessage,
+		"favorite":       d.Favorite,
+		"available":      d.Available,
 		"is_replica":     replicator.IsManagedReplica(d.SourcePath, replicaDir),
 	}
 }
