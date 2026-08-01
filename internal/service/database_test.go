@@ -142,6 +142,7 @@ func TestCreateTableAndAddColumn(t *testing.T) {
 	if _, err := svc.CreateDatabase(ctx, "builder"); err != nil {
 		t.Fatal(err)
 	}
+
 	if err := svc.CreateTable(ctx, "builder", CreateTableRequest{
 		Name: "users",
 		Columns: []ColumnDefinition{
@@ -181,6 +182,141 @@ func TestCreateTableAndAddColumn(t *testing.T) {
 	}
 	if err := svc.AddColumn(ctx, "builder", "user-data", ColumnDefinition{Name: "email-address", Type: "TEXT"}); err != nil {
 		t.Fatalf("AddColumn with quoted identifiers failed: %v", err)
+	}
+}
+
+func TestInsertRowSupportsValuesNullAndDefaults(t *testing.T) {
+	svc := setupTestService(t)
+	ctx := context.Background()
+
+	if _, err := svc.CreateDatabase(ctx, "rows"); err != nil {
+		t.Fatal(err)
+	}
+	defaultStatus := "active"
+	if err := svc.CreateTable(ctx, "rows", CreateTableRequest{
+		Name: "users",
+		Columns: []ColumnDefinition{
+			{Name: "id", Type: "INTEGER", PrimaryKey: true},
+			{Name: "name", Type: "TEXT", NotNull: true},
+			{Name: "note", Type: "TEXT"},
+			{Name: "status", Type: "TEXT", DefaultValue: &defaultStatus},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	name := "Ada"
+	result, err := svc.InsertRow(ctx, "rows", "users", InsertRowRequest{
+		Columns: []string{"name", "note"},
+		Values:  []*string{&name, nil},
+	})
+	if err != nil {
+		t.Fatalf("InsertRow failed: %v", err)
+	}
+	if result.RowsAffected != 1 || result.LastInsertID == 0 {
+		t.Fatalf("unexpected insert result: %+v", result)
+	}
+
+	rows, err := svc.Query(ctx, "rows", `SELECT id, name, note, status FROM "users"`, nil, 10, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows.Rows) != 1 {
+		t.Fatalf("expected one row, got %+v", rows.Rows)
+	}
+	want := []string{"1", "Ada", "NULL", "active"}
+	for i, value := range want {
+		if rows.Rows[0][i] != value {
+			t.Fatalf("row[%d] = %q, want %q", i, rows.Rows[0][i], value)
+		}
+	}
+
+	if err := svc.CreateTable(ctx, "rows", CreateTableRequest{
+		Name: "settings",
+		Columns: []ColumnDefinition{
+			{Name: "id", Type: "INTEGER", PrimaryKey: true},
+			{Name: "status", Type: "TEXT", DefaultValue: &defaultStatus},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.InsertRow(ctx, "rows", "settings", InsertRowRequest{}); err != nil {
+		t.Fatalf("DEFAULT VALUES insert failed: %v", err)
+	}
+}
+
+func TestInsertRowValidatesColumnsAndValues(t *testing.T) {
+	svc := setupTestService(t)
+	ctx := context.Background()
+	if _, err := svc.CreateDatabase(ctx, "row-validation"); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.CreateTable(ctx, "row-validation", CreateTableRequest{
+		Name:    "items",
+		Columns: []ColumnDefinition{{Name: "name", Type: "TEXT"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	value := "test"
+	tests := []InsertRowRequest{
+		{Columns: []string{"name"}, Values: nil},
+		{Columns: []string{"missing"}, Values: []*string{&value}},
+		{Columns: []string{"name", "NAME"}, Values: []*string{&value, &value}},
+	}
+	for _, req := range tests {
+		if _, err := svc.InsertRow(ctx, "row-validation", "items", req); err == nil {
+			t.Fatalf("expected validation error for %+v", req)
+		}
+	}
+
+	if err := svc.CreateTable(ctx, "row-validation", CreateTableRequest{
+		Name: "unicode",
+		Columns: []ColumnDefinition{
+			{Name: "Ä", Type: "TEXT"},
+			{Name: "ä", Type: "TEXT"},
+		},
+	}); err != nil {
+		t.Fatalf("create Unicode columns: %v", err)
+	}
+	upper, lower := "upper", "lower"
+	if _, err := svc.InsertRow(ctx, "row-validation", "unicode", InsertRowRequest{
+		Columns: []string{"Ä", "ä"},
+		Values:  []*string{&upper, &lower},
+	}); err != nil {
+		t.Fatalf("insert Unicode columns: %v", err)
+	}
+}
+
+func TestInsertRowSafelyReadsQuotedTableName(t *testing.T) {
+	svc := setupTestService(t)
+	ctx := context.Background()
+	if _, err := svc.CreateDatabase(ctx, "quoted-row"); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.CreateTable(ctx, "quoted-row", CreateTableRequest{
+		Name:    "safe",
+		Columns: []ColumnDefinition{{Name: "value", Type: "TEXT"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	tableName := `odd'); DROP TABLE safe; --`
+	if err := svc.CreateTable(ctx, "quoted-row", CreateTableRequest{
+		Name:    tableName,
+		Columns: []ColumnDefinition{{Name: "value", Type: "TEXT"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	value := "kept"
+	if _, err := svc.InsertRow(ctx, "quoted-row", tableName, InsertRowRequest{
+		Columns: []string{"value"},
+		Values:  []*string{&value},
+	}); err != nil {
+		t.Fatalf("insert quoted table: %v", err)
+	}
+	if _, err := svc.Query(ctx, "quoted-row", `SELECT * FROM "safe"`, nil, 10, 0); err != nil {
+		t.Fatalf("safe table was modified: %v", err)
 	}
 }
 

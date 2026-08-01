@@ -98,7 +98,12 @@ function App() {
             ) : selectedDb ? (
               <>
                 {activeTab === 'browse' && selectedTable && (
-                  <TableBrowser dbName={selectedDb} tableName={selectedTable} />
+                  <TableBrowser
+                    dbName={selectedDb}
+                    tableName={selectedTable}
+                    tableInfo={tables.find((table) => table.Name === selectedTable)}
+                    onDataChange={async () => { await Promise.all([refresh(), refreshSchema()]); }}
+                  />
                 )}
                 {activeTab === 'browse' && !selectedTable && (
                   <SchemaViewer

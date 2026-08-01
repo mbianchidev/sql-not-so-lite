@@ -18,10 +18,21 @@ const emptyColumn = (): ColumnDefinition => ({
   PrimaryKey: false,
 });
 
+interface DraftColumn {
+  id: number;
+  definition: ColumnDefinition;
+}
+
+let nextDraftColumnId = 0;
+const createDraftColumn = (): DraftColumn => ({
+  id: nextDraftColumnId++,
+  definition: emptyColumn(),
+});
+
 export function SchemaViewer({ dbName, tables, selectedTable, onSelectTable, onSchemaChange }: Props) {
   const selected = tables.find((t) => t.Name === selectedTable);
   const [newTableName, setNewTableName] = useState('');
-  const [tableColumns, setTableColumns] = useState<ColumnDefinition[]>([emptyColumn()]);
+  const [tableColumns, setTableColumns] = useState<DraftColumn[]>([createDraftColumn()]);
   const [newColumn, setNewColumn] = useState<ColumnDefinition>(emptyColumn);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -42,7 +53,10 @@ export function SchemaViewer({ dbName, tables, selectedTable, onSelectTable, onS
 
   const handleCreateTable = () => {
     const tableName = newTableName.trim();
-    const columns = tableColumns.map((column) => ({ ...column, Name: column.Name.trim() }));
+    const columns = tableColumns.map(({ definition }) => ({
+      ...definition,
+      Name: definition.Name.trim(),
+    }));
     if (!tableName || columns.some((column) => !column.Name)) {
       setError('Enter a table name and a name for every field.');
       return;
@@ -56,14 +70,26 @@ export function SchemaViewer({ dbName, tables, selectedTable, onSelectTable, onS
       () => api.createTable(dbName, tableName, columns),
       () => {
         setNewTableName('');
-        setTableColumns([emptyColumn()]);
+        setTableColumns([createDraftColumn()]);
         onSelectTable(tableName);
       },
     );
   };
 
   const updateTableColumn = (index: number, column: ColumnDefinition) => {
-    setTableColumns((current) => current.map((item, itemIndex) => itemIndex === index ? column : item));
+    setTableColumns((current) => current.map((item, itemIndex) => (
+      itemIndex === index ? { ...item, definition: column } : item
+    )));
+  };
+
+  const moveTableColumn = (index: number, direction: -1 | 1) => {
+    setTableColumns((current) => {
+      const destination = index + direction;
+      if (destination < 0 || destination >= current.length) return current;
+      const reordered = [...current];
+      [reordered[index], reordered[destination]] = [reordered[destination], reordered[index]];
+      return reordered;
+    });
   };
 
   const removeTableColumn = (index: number) => {
@@ -100,10 +126,32 @@ export function SchemaViewer({ dbName, tables, selectedTable, onSelectTable, onS
           />
           <div className="create-table-columns">
             {tableColumns.map((column, index) => (
-              <div className="create-table-column" key={index}>
+              <div className="create-table-column" key={column.id}>
+                <div className="create-table-column-order">
+                  <button
+                    type="button"
+                    className="btn-icon"
+                    onClick={() => moveTableColumn(index, -1)}
+                    disabled={saving || index === 0}
+                    aria-label={`Move field ${index + 1} up`}
+                    title="Move field up"
+                  >
+                    ↑
+                  </button>
+                  <button
+                    type="button"
+                    className="btn-icon"
+                    onClick={() => moveTableColumn(index, 1)}
+                    disabled={saving || index === tableColumns.length - 1}
+                    aria-label={`Move field ${index + 1} down`}
+                    title="Move field down"
+                  >
+                    ↓
+                  </button>
+                </div>
                 <span className="create-table-column-number" aria-hidden="true">{index + 1}</span>
                 <ColumnForm
-                  value={column}
+                  value={column.definition}
                   onChange={(value) => updateTableColumn(index, value)}
                   allowPrimaryKey
                   disabled={saving}
@@ -125,7 +173,7 @@ export function SchemaViewer({ dbName, tables, selectedTable, onSelectTable, onS
             <button
               type="button"
               className="btn-sm"
-              onClick={() => setTableColumns((current) => [...current, emptyColumn()])}
+              onClick={() => setTableColumns((current) => [...current, createDraftColumn()])}
               disabled={saving}
             >
               + Add field
@@ -133,7 +181,11 @@ export function SchemaViewer({ dbName, tables, selectedTable, onSelectTable, onS
             <button
               className="btn-primary"
               onClick={handleCreateTable}
-              disabled={saving || !newTableName.trim() || tableColumns.some((column) => !column.Name.trim())}
+              disabled={
+                saving
+                || !newTableName.trim()
+                || tableColumns.some(({ definition }) => !definition.Name.trim())
+              }
             >
               {saving ? 'Creating…' : 'Create table'}
             </button>

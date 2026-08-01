@@ -26,7 +26,7 @@ Lightweight SQLite-as-a-service daemon. Manages multiple SQLite databases as fil
 
 - **Multi-database**: Each app creates its own `.sqlite` file
 - **gRPC API**: Typed, high-performance API for applications
-- **Web GUI**: Browse tables, create multi-field tables, view schemas, and run SQL queries with Monaco editor
+- **Web GUI**: Browse and insert rows, create tables with ordered fields, view schemas, and run SQL queries with Monaco editor
 - **Idle management**: Closes idle connections automatically, stays dormant when unused (~5-10MB RSS)
 - **Single binary**: GUI embedded via `go:embed` — one file to run
 - **Cross-platform**: macOS (launchd), Linux (systemd), Docker
@@ -184,6 +184,7 @@ grpcurl -plaintext -d '{"database":"myapp","sql":"SELECT * FROM users","limit":1
 | POST | `/api/databases/:name/tables` | Create a table with its initial fields |
 | GET | `/api/databases/:name/tables/:table?limit=N&offset=N` | Table data |
 | POST | `/api/databases/:name/tables/:table/columns` | Add a field to an existing table |
+| POST | `/api/databases/:name/tables/:table/rows` | Insert a row with explicit values, NULLs, or field defaults |
 | POST | `/api/databases/:name/query` | Execute SQL `{"sql":"..."}` |
 | GET | `/api/health` | Health check |
 | GET | `/api/stats` | Memory, connections, uptime |
@@ -202,8 +203,8 @@ grpcurl -plaintext -d '{"database":"myapp","sql":"SELECT * FROM users","limit":1
 Access at `http://localhost:9147` when the daemon is running.
 
 - **Sidebar**: Lists all databases with active/idle status
-- **Table Browser**: Click a database → see tables → click to browse rows
-- **Schema Viewer**: Create tables and fields; inspect column types, constraints, indexes, and foreign keys
+- **Table Browser**: Browse rows and add records with explicit values, NULLs, or field defaults
+- **Schema Viewer**: Create tables, reorder fields before creation, and inspect column types, constraints, indexes, and foreign keys
 - **SQL Editor**: Monaco-based with syntax highlighting and Ctrl+Enter execution
 - **Results**: Sortable table with CSV/JSON export
 - **Dark/Light theme**: Toggle in header

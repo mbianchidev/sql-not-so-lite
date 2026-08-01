@@ -257,7 +257,16 @@ export const api = {
 
   getTableData: (dbName: string, table: string, limit = 100, offset = 0) =>
     request<QueryResult>(
-      `/api/databases/${dbName}/tables/${table}?limit=${limit}&offset=${offset}`
+      `/api/databases/${encodeURIComponent(dbName)}/tables/${encodeURIComponent(table)}?limit=${limit}&offset=${offset}`
+    ),
+
+  insertRow: (dbName: string, table: string, columns: string[], values: Array<string | null>) =>
+    request<ExecResult>(
+      `/api/databases/${encodeURIComponent(dbName)}/tables/${encodeURIComponent(table)}/rows`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ Columns: columns, Values: values }),
+      },
     ),
 
   executeQuery: (dbName: string, sql: string, params?: string[]) =>

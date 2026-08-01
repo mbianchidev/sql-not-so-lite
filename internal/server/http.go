@@ -192,7 +192,7 @@ func (s *HTTPServer) handleDatabases(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *HTTPServer) handleDatabase(w http.ResponseWriter, r *http.Request) {
-	// Parse path: /api/databases/{name}[/schema|/tables[/{table}[/columns]]|/query]
+	// Parse path: /api/databases/{name}[/schema|/tables[/{table}[/columns|/rows]]|/query]
 	path := strings.TrimPrefix(r.URL.Path, "/api/databases/")
 	parts := strings.SplitN(path, "/", 4)
 	dbName := parts[0]
@@ -216,11 +216,14 @@ func (s *HTTPServer) handleDatabase(w http.ResponseWriter, r *http.Request) {
 			tableName = parts[2]
 		}
 		if len(parts) == 4 {
-			if parts[3] != "columns" {
+			switch parts[3] {
+			case "columns":
+				s.handleColumns(w, r, dbName, tableName)
+			case "rows":
+				s.handleRows(w, r, dbName, tableName)
+			default:
 				writeError(w, http.StatusNotFound, "not found")
-				return
 			}
-			s.handleColumns(w, r, dbName, tableName)
 			return
 		}
 		s.handleTables(w, r, dbName, tableName)
@@ -352,6 +355,32 @@ func (s *HTTPServer) handleColumns(w http.ResponseWriter, r *http.Request, dbNam
 		return
 	}
 	writeJSON(w, http.StatusCreated, map[string]bool{"success": true})
+}
+
+func (s *HTTPServer) handleRows(w http.ResponseWriter, r *http.Request, dbName, tableName string) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	if tableName == "" {
+		writeError(w, http.StatusBadRequest, "table name required")
+		return
+	}
+
+	var req service.InsertRowRequest
+	r.Body = http.MaxBytesReader(w, r.Body, 1024*1024)
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	result, err := s.svc.InsertRow(r.Context(), dbName, tableName, req)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, result)
 }
 
 func (s *HTTPServer) registerCreatedDatabase(info *service.DBInfo) error {

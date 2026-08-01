@@ -420,4 +420,23 @@ func TestSchemaMutationRoutes(t *testing.T) {
 	if len(tables) != 1 || len(tables[0].Columns) != 2 {
 		t.Fatalf("unexpected schema: %+v", tables)
 	}
+
+	rowRequest := httptest.NewRequest(
+		http.MethodPost,
+		"/api/databases/schema/tables/users/rows",
+		bytes.NewBufferString(`{"Columns":["email"],"Values":["dev@example.com"]}`),
+	)
+	rowResponse := httptest.NewRecorder()
+	server.handleDatabase(rowResponse, rowRequest)
+	if rowResponse.Code != http.StatusCreated {
+		t.Fatalf("insert row status = %d, body = %s", rowResponse.Code, rowResponse.Body.String())
+	}
+
+	rows, err := server.svc.Query(context.Background(), "schema", `SELECT email FROM "users"`, nil, 10, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows.Rows) != 1 || rows.Rows[0][0] != "dev@example.com" {
+		t.Fatalf("unexpected inserted rows: %+v", rows.Rows)
+	}
 }

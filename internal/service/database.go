@@ -75,6 +75,11 @@ type CreateTableRequest struct {
 	Columns []ColumnDefinition
 }
 
+type InsertRowRequest struct {
+	Columns []string
+	Values  []*string
+}
+
 var sqliteColumnTypes = map[string]struct{}{
 	"BLOB":     {},
 	"BOOLEAN":  {},
@@ -185,7 +190,7 @@ func (s *DatabaseService) CreateTable(_ context.Context, dbName string, req Crea
 	columnSQL := make([]string, 0, len(req.Columns))
 	seen := make(map[string]struct{}, len(req.Columns))
 	for _, column := range req.Columns {
-		key := strings.ToLower(column.Name)
+		key := sqliteIdentifierKey(column.Name)
 		if _, exists := seen[key]; exists {
 			return fmt.Errorf("duplicate column %q", column.Name)
 		}
@@ -242,6 +247,83 @@ func (s *DatabaseService) AddColumn(_ context.Context, dbName, tableName string,
 		return fmt.Errorf("add column failed: %w", err)
 	}
 	return nil
+}
+
+func (s *DatabaseService) InsertRow(
+	ctx context.Context,
+	dbName, tableName string,
+	req InsertRowRequest,
+) (*ExecResult, error) {
+	if err := validateExistingIdentifier("table", tableName); err != nil {
+		return nil, err
+	}
+	if strings.Contains(tableName, "/") {
+		return nil, fmt.Errorf("table name cannot contain '/'")
+	}
+	if len(req.Columns) != len(req.Values) {
+		return nil, fmt.Errorf("columns and values must have the same length")
+	}
+
+	entry, err := s.manager.Get(dbName)
+	if err != nil {
+		return nil, err
+	}
+	table, err := s.getTableInfo(entry.DB, tableName)
+	if err != nil {
+		return nil, fmt.Errorf("read table schema: %w", err)
+	}
+	if len(table.Columns) == 0 {
+		return nil, fmt.Errorf("table %q does not exist", tableName)
+	}
+
+	knownColumns := make(map[string]string, len(table.Columns))
+	for _, column := range table.Columns {
+		knownColumns[sqliteIdentifierKey(column.Name)] = column.Name
+	}
+
+	quotedColumns := make([]string, 0, len(req.Columns))
+	placeholders := make([]string, 0, len(req.Columns))
+	args := make([]any, 0, len(req.Values))
+	seen := make(map[string]struct{}, len(req.Columns))
+	for index, requestedColumn := range req.Columns {
+		if err := validateExistingIdentifier("column", requestedColumn); err != nil {
+			return nil, err
+		}
+		key := sqliteIdentifierKey(requestedColumn)
+		if _, exists := seen[key]; exists {
+			return nil, fmt.Errorf("duplicate column %q", requestedColumn)
+		}
+		seen[key] = struct{}{}
+
+		columnName, exists := knownColumns[key]
+		if !exists {
+			return nil, fmt.Errorf("column %q does not exist in table %q", requestedColumn, tableName)
+		}
+		quotedColumns = append(quotedColumns, quoteIdentifier(columnName))
+		placeholders = append(placeholders, "?")
+		if req.Values[index] == nil {
+			args = append(args, nil)
+		} else {
+			args = append(args, *req.Values[index])
+		}
+	}
+
+	statement := fmt.Sprintf("INSERT INTO %s DEFAULT VALUES", quoteIdentifier(tableName))
+	if len(quotedColumns) > 0 {
+		statement = fmt.Sprintf(
+			"INSERT INTO %s (%s) VALUES (%s)",
+			quoteIdentifier(tableName),
+			strings.Join(quotedColumns, ", "),
+			strings.Join(placeholders, ", "),
+		)
+	}
+	result, err := entry.DB.ExecContext(ctx, statement, args...)
+	if err != nil {
+		return nil, fmt.Errorf("insert row failed: %w", err)
+	}
+	rowsAffected, _ := result.RowsAffected()
+	lastID, _ := result.LastInsertId()
+	return &ExecResult{RowsAffected: rowsAffected, LastInsertID: lastID}, nil
 }
 
 func (s *DatabaseService) Query(_ context.Context, dbName, sqlStr string, params []string, limit, offset int) (*QueryResult, error) {
@@ -367,7 +449,10 @@ func (s *DatabaseService) getTableInfo(db *sql.DB, tableName string) (*TableInfo
 	info := &TableInfo{Name: tableName}
 
 	// Get columns — collect and close before next query (single-conn DB)
-	pragmaRows, err := db.Query(fmt.Sprintf("PRAGMA table_info('%s')", tableName))
+	pragmaRows, err := db.Query(
+		`SELECT cid, name, type, "notnull", dflt_value, pk FROM pragma_table_info(?)`,
+		tableName,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -399,7 +484,10 @@ func (s *DatabaseService) getTableInfo(db *sql.DB, tableName string) (*TableInfo
 	}
 	var rawIndexes []rawIdx
 
-	idxRows, err := db.Query(fmt.Sprintf("PRAGMA index_list('%s')", tableName))
+	idxRows, err := db.Query(
+		`SELECT seq, name, "unique", origin, partial FROM pragma_index_list(?)`,
+		tableName,
+	)
 	if err == nil {
 		for idxRows.Next() {
 			var seq int
@@ -418,7 +506,10 @@ func (s *DatabaseService) getTableInfo(db *sql.DB, tableName string) (*TableInfo
 	for _, ri := range rawIndexes {
 		idx := IndexInfo{Name: ri.name, Unique: ri.unique}
 
-		colRows, err := db.Query(fmt.Sprintf("PRAGMA index_info('%s')", ri.name))
+		colRows, err := db.Query(
+			`SELECT seqno, cid, name FROM pragma_index_info(?)`,
+			ri.name,
+		)
 		if err == nil {
 			for colRows.Next() {
 				var seqno, cid int
@@ -514,4 +605,16 @@ func quoteIdentifier(name string) string {
 
 func quoteLiteral(value string) string {
 	return `'` + strings.ReplaceAll(value, `'`, `''`) + `'`
+}
+
+func sqliteIdentifierKey(value string) string {
+	var builder strings.Builder
+	builder.Grow(len(value))
+	for _, char := range value {
+		if char >= 'A' && char <= 'Z' {
+			char += 'a' - 'A'
+		}
+		builder.WriteRune(char)
+	}
+	return builder.String()
 }
