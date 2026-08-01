@@ -626,6 +626,10 @@ tr:hover td { background: rgba(122, 162, 247, 0.05); }
   margin-left: auto;
   margin-right: 0.5rem;
 }
+.discovered-status-label.replica {
+  color: #bb9af7;
+  font-weight: 700;
+}
 
 .discovered-error-detail {
   font-size: 0.8rem;
@@ -657,6 +661,10 @@ tr:hover td { background: rgba(122, 162, 247, 0.05); }
 }
 .status-indicator.paused { background: var(--warning); }
 .status-indicator.error { background: var(--danger); }
+.status-indicator.replica {
+  background: #bb9af7;
+  box-shadow: 0 0 0 3px rgba(187, 154, 247, 0.18);
+}
 
 @keyframes pulse-green {
   0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(158, 206, 106, 0.5); }

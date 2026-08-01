@@ -299,7 +299,7 @@ var scanCmd = &cobra.Command{
 		for _, root := range roots {
 			scanCfg := cfg.Scanner
 			scanCfg.ScanRoot = root
-			s := scanner.New(scanCfg, cfg.Server.DataDir)
+			s := scanner.New(scanCfg, cfg.Server.DataDir, cfg.Replicator.SnapshotDir)
 			files, err := s.Scan()
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Warning: scan of %s failed: %v\n", root, err)
@@ -374,9 +374,13 @@ var discoveredCmd = &cobra.Command{
 		fmt.Println(repeatChar('-', 130))
 
 		for _, d := range dbs {
+			status := d.Status
+			if replicator.IsManagedReplica(d.SourcePath, cfg.Replicator.ReplicaDir) {
+				status = "replica"
+			}
 			fmt.Printf("%-30s %-40s %-12s %-10s %-20s %s\n",
 				truncate(d.Name, 30), truncate(d.SourcePath, 40),
-				d.Status, d.Priority,
+				status, d.Priority,
 				truncate(d.GitHubRepo, 20), formatSize(d.SizeBytes))
 		}
 
@@ -409,6 +413,9 @@ var replicateCmd = &cobra.Command{
 		db, err := cat.GetDiscoveredByName(name)
 		if err != nil {
 			return fmt.Errorf("database %q not found: %w", name, err)
+		}
+		if replicator.IsManagedReplica(db.SourcePath, cfg.Replicator.ReplicaDir) {
+			return fmt.Errorf("database %q is a managed replica and cannot be replicated", name)
 		}
 
 		replicaPath := filepath.Join(cfg.Replicator.ReplicaDir, db.Name+".sqlite")

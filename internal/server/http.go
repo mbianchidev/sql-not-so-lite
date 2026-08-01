@@ -473,7 +473,11 @@ func (s *HTTPServer) handleScan(w http.ResponseWriter, r *http.Request) {
 
 		scanCfg := s.cfg.Scanner
 		scanCfg.ScanRoot = root
-		rootFiles, err := scanner.New(scanCfg, s.cfg.Server.DataDir).Scan()
+		rootFiles, err := scanner.New(
+			scanCfg,
+			s.cfg.Server.DataDir,
+			s.cfg.Replicator.SnapshotDir,
+		).Scan()
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, fmt.Sprintf("scan failed for %s: %v", root, err))
 			return
@@ -575,7 +579,7 @@ func (s *HTTPServer) handleDiscovered(w http.ResponseWriter, r *http.Request) {
 
 	var result []map[string]interface{}
 	for _, d := range dbs {
-		result = append(result, discoveredToJSON(&d))
+		result = append(result, discoveredToJSON(&d, s.cfg.Replicator.ReplicaDir))
 	}
 	if result == nil {
 		result = []map[string]interface{}{}
@@ -628,22 +632,22 @@ func (s *HTTPServer) handleDiscoveredGet(w http.ResponseWriter, r *http.Request,
 			return
 		}
 
-		result := discoveredToJSON(d)
+		result := discoveredToJSON(d, s.cfg.Replicator.ReplicaDir)
 
 		// Include replication state if available
 		rs, err := s.catalog.GetReplicationState(id)
-	if err == nil {
-		result["replication"] = map[string]interface{}{
-			"replica_name":    rs.ReplicaName,
-			"last_frame":      rs.LastFrame,
-			"page_size":       rs.PageSize,
-			"last_sync":       rs.LastSync,
-			"sync_mode":       rs.SyncMode,
-			"base_snapshot_id": rs.BaseSnapshotID.Int64,
+		if err == nil {
+			result["replication"] = map[string]interface{}{
+				"replica_name":     rs.ReplicaName,
+				"last_frame":       rs.LastFrame,
+				"page_size":        rs.PageSize,
+				"last_sync":        rs.LastSync,
+				"sync_mode":        rs.SyncMode,
+				"base_snapshot_id": rs.BaseSnapshotID.Int64,
+			}
 		}
-	}
 
-	writeJSON(w, http.StatusOK, result)
+		writeJSON(w, http.StatusOK, result)
 
 	case http.MethodDelete:
 		if err := s.catalog.DeleteDiscovered(id); err != nil {
@@ -672,6 +676,10 @@ func (s *HTTPServer) handleStartReplication(w http.ResponseWriter, _ *http.Reque
 	d, err := s.catalog.GetDiscovered(id)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "database not found")
+		return
+	}
+	if replicator.IsManagedReplica(d.SourcePath, s.cfg.Replicator.ReplicaDir) {
+		writeError(w, http.StatusConflict, "cannot replicate a managed replica")
 		return
 	}
 
@@ -931,7 +939,7 @@ func (s *HTTPServer) handleSchemaTransitions(w http.ResponseWriter, r *http.Requ
 	writeJSON(w, http.StatusOK, result)
 }
 
-func discoveredToJSON(d *catalog.DiscoveredDB) map[string]interface{} {
+func discoveredToJSON(d *catalog.DiscoveredDB, replicaDir string) map[string]interface{} {
 	return map[string]interface{}{
 		"id":             d.ID,
 		"name":           d.Name,
@@ -948,6 +956,7 @@ func discoveredToJSON(d *catalog.DiscoveredDB) map[string]interface{} {
 		"github_repo":    d.GitHubRepo,
 		"github_url":     d.GitHubURL,
 		"error_message":  d.ErrorMessage,
+		"is_replica":     replicator.IsManagedReplica(d.SourcePath, replicaDir),
 	}
 }
 

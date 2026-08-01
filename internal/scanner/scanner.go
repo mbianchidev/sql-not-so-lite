@@ -28,8 +28,8 @@ type DiscoveredFile struct {
 }
 
 type Scanner struct {
-	cfg        config.ScannerConfig
-	ownDataDir string
+	cfg          config.ScannerConfig
+	excludedDirs []string
 }
 
 var priorityOrder = map[string]int{
@@ -40,8 +40,21 @@ var priorityOrder = map[string]int{
 	"other":     4,
 }
 
-func New(cfg config.ScannerConfig, ownDataDir string) *Scanner {
-	return &Scanner{cfg: cfg, ownDataDir: ownDataDir}
+func New(cfg config.ScannerConfig, excludedDirs ...string) *Scanner {
+	cfg.ScanRoot = canonicalPath(cfg.ScanRoot)
+	cfg.PriorityPathsDocker = canonicalPaths(cfg.PriorityPathsDocker)
+	cfg.PriorityPathsWorkspace = canonicalPaths(cfg.PriorityPathsWorkspace)
+	cfg.PriorityPathsCopilot = canonicalPaths(cfg.PriorityPathsCopilot)
+	cfg.PriorityPathsAppData = canonicalPaths(cfg.PriorityPathsAppData)
+
+	normalizedDirs := make([]string, 0, len(excludedDirs))
+	for _, dir := range excludedDirs {
+		if dir == "" {
+			continue
+		}
+		normalizedDirs = append(normalizedDirs, canonicalPath(dir))
+	}
+	return &Scanner{cfg: cfg, excludedDirs: normalizedDirs}
 }
 
 func (s *Scanner) Scan() ([]DiscoveredFile, error) {
@@ -60,9 +73,10 @@ func (s *Scanner) Scan() ([]DiscoveredFile, error) {
 		}
 
 		if d.IsDir() {
-			// Skip our own data directory
-			if s.ownDataDir != "" && path == s.ownDataDir {
-				return fs.SkipDir
+			for _, excludedDir := range s.excludedDirs {
+				if isUnder(path, excludedDir) {
+					return fs.SkipDir
+				}
 			}
 			// Skip directories matching exclude patterns
 			for _, pat := range s.cfg.ExcludePatterns {
@@ -351,13 +365,33 @@ func isUnder(path, prefix string) bool {
 	if prefix == "" {
 		return false
 	}
-	// Ensure prefix ends with separator for proper matching
 	cleanPath := filepath.Clean(path)
 	cleanPrefix := filepath.Clean(prefix)
 	if cleanPath == cleanPrefix {
 		return true
 	}
 	return strings.HasPrefix(cleanPath, cleanPrefix+string(filepath.Separator))
+}
+
+func canonicalPaths(paths []string) []string {
+	normalized := make([]string, 0, len(paths))
+	for _, path := range paths {
+		if path != "" {
+			normalized = append(normalized, canonicalPath(path))
+		}
+	}
+	return normalized
+}
+
+func canonicalPath(path string) string {
+	absolutePath, err := filepath.Abs(path)
+	if err != nil {
+		return filepath.Clean(path)
+	}
+	if resolvedPath, err := filepath.EvalSymlinks(absolutePath); err == nil {
+		return resolvedPath
+	}
+	return filepath.Clean(absolutePath)
 }
 
 // matchesDotdirPattern checks if a path matches a pattern like /home/user/.{name}/data/
