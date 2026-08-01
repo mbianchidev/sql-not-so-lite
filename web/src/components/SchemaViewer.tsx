@@ -21,7 +21,7 @@ const emptyColumn = (): ColumnDefinition => ({
 export function SchemaViewer({ dbName, tables, selectedTable, onSelectTable, onSchemaChange }: Props) {
   const selected = tables.find((t) => t.Name === selectedTable);
   const [newTableName, setNewTableName] = useState('');
-  const [tableColumn, setTableColumn] = useState<ColumnDefinition>(emptyColumn);
+  const [tableColumns, setTableColumns] = useState<ColumnDefinition[]>([emptyColumn()]);
   const [newColumn, setNewColumn] = useState<ColumnDefinition>(emptyColumn);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -42,16 +42,32 @@ export function SchemaViewer({ dbName, tables, selectedTable, onSelectTable, onS
 
   const handleCreateTable = () => {
     const tableName = newTableName.trim();
-    const column = { ...tableColumn, Name: tableColumn.Name.trim() };
-    if (!tableName || !column.Name) return;
+    const columns = tableColumns.map((column) => ({ ...column, Name: column.Name.trim() }));
+    if (!tableName || columns.some((column) => !column.Name)) {
+      setError('Enter a table name and a name for every field.');
+      return;
+    }
+    const names = columns.map((column) => column.Name.toLocaleLowerCase());
+    if (new Set(names).size !== names.length) {
+      setError('Field names must be unique.');
+      return;
+    }
     void save(
-      () => api.createTable(dbName, tableName, [column]),
+      () => api.createTable(dbName, tableName, columns),
       () => {
         setNewTableName('');
-        setTableColumn(emptyColumn());
+        setTableColumns([emptyColumn()]);
         onSelectTable(tableName);
       },
     );
+  };
+
+  const updateTableColumn = (index: number, column: ColumnDefinition) => {
+    setTableColumns((current) => current.map((item, itemIndex) => itemIndex === index ? column : item));
+  };
+
+  const removeTableColumn = (index: number) => {
+    setTableColumns((current) => current.filter((_, itemIndex) => itemIndex !== index));
   };
 
   const handleAddColumn = () => {
@@ -68,21 +84,60 @@ export function SchemaViewer({ dbName, tables, selectedTable, onSelectTable, onS
     <div className="schema-viewer">
       <div className="schema-tables">
         <h3>Tables</h3>
-        <div className="schema-form">
+        <div className="schema-form create-table-form">
+          <div className="schema-form-heading">
+            <div>
+              <h4>Create table</h4>
+              <p>Define the fields before creating it.</p>
+            </div>
+          </div>
           <input
             value={newTableName}
             onChange={(event) => setNewTableName(event.target.value)}
             placeholder="Table name"
+            aria-label="Table name"
             disabled={saving}
           />
-          <ColumnForm value={tableColumn} onChange={setTableColumn} allowPrimaryKey disabled={saving} />
-          <button
-            className="btn-primary"
-            onClick={handleCreateTable}
-            disabled={saving || !newTableName.trim() || !tableColumn.Name.trim()}
-          >
-            Create table
-          </button>
+          <div className="create-table-columns">
+            {tableColumns.map((column, index) => (
+              <div className="create-table-column" key={index}>
+                <span className="create-table-column-number" aria-hidden="true">{index + 1}</span>
+                <ColumnForm
+                  value={column}
+                  onChange={(value) => updateTableColumn(index, value)}
+                  allowPrimaryKey
+                  disabled={saving}
+                />
+                <button
+                  type="button"
+                  className="btn-danger-sm create-table-column-remove"
+                  onClick={() => removeTableColumn(index)}
+                  disabled={saving || tableColumns.length === 1}
+                  aria-label={`Remove field ${index + 1}`}
+                  title="Remove field"
+                >
+                  ✕
+                </button>
+              </div>
+            ))}
+          </div>
+          <div className="create-table-actions">
+            <button
+              type="button"
+              className="btn-sm"
+              onClick={() => setTableColumns((current) => [...current, emptyColumn()])}
+              disabled={saving}
+            >
+              + Add field
+            </button>
+            <button
+              className="btn-primary"
+              onClick={handleCreateTable}
+              disabled={saving || !newTableName.trim() || tableColumns.some((column) => !column.Name.trim())}
+            >
+              {saving ? 'Creating…' : 'Create table'}
+            </button>
+          </div>
         </div>
         {error && <div className="error-msg">{error}</div>}
         <ul className="table-list">

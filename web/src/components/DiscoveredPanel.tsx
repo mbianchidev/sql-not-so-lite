@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { api, type DiscoveredDB } from '../api/client';
 import { SchemaTimeline } from './SchemaTimeline';
 
@@ -49,6 +49,7 @@ export function DiscoveredPanel({ selectedId, onSelect }: Props) {
   const [actionLoading, setActionLoading] = useState<number | null>(null);
   const [scanPath, setScanPath] = useState('');
   const [showScanInput, setShowScanInput] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
 
   const refresh = useCallback(async () => {
     try {
@@ -144,7 +145,24 @@ export function DiscoveredPanel({ selectedId, onSelect }: Props) {
     }
   };
 
-  const selected = databases.find((db) => db.ID === selectedId) ?? null;
+  const filteredDatabases = useMemo(() => {
+    const query = searchQuery.trim().toLocaleLowerCase();
+    if (!query) return databases;
+
+    return databases.filter((db) => [
+      db.Name,
+      db.SourcePath,
+      db.GitHubRepo,
+      db.Status,
+      db.Priority,
+      PRIORITY_LABELS[db.Priority],
+      db.SQLiteVersion,
+      db.JournalMode,
+    ].some((value) => value?.toLocaleLowerCase().includes(query)));
+  }, [databases, searchQuery]);
+
+  const selected = filteredDatabases.find((db) => db.ID === selectedId) ?? null;
+  const isFiltering = searchQuery.trim().length > 0;
 
   return (
     <div className="discovered-panel">
@@ -185,8 +203,34 @@ export function DiscoveredPanel({ selectedId, onSelect }: Props) {
       {scanMessage && <div className="scan-result">{scanMessage}</div>}
       {loading && <div className="loading">Loading…</div>}
 
+      {databases.length > 0 && (
+        <div className="discovered-search">
+          <span className="discovered-search-icon" aria-hidden="true">⌕</span>
+          <input
+            type="search"
+            value={searchQuery}
+            onChange={(event) => setSearchQuery(event.target.value)}
+            placeholder="Search name, path, repository, status…"
+            aria-label="Search discovered databases"
+          />
+          <span className="discovered-search-count" aria-live="polite">
+            {filteredDatabases.length} / {databases.length}
+          </span>
+          {isFiltering && (
+            <button
+              type="button"
+              className="discovered-search-clear"
+              onClick={() => setSearchQuery('')}
+              aria-label="Clear search"
+            >
+              Clear
+            </button>
+          )}
+        </div>
+      )}
+
       <div className="discovered-list">
-        {databases.map((db) => (
+        {filteredDatabases.map((db) => (
           <div
             key={db.ID}
             className={`discovered-item ${selectedId === db.ID ? 'active' : ''}`}
@@ -272,6 +316,14 @@ export function DiscoveredPanel({ selectedId, onSelect }: Props) {
         {!loading && databases.length === 0 && !scanMessage && (
           <div className="discovered-empty">
             No databases discovered yet. Click <strong>Scan</strong> to search.
+          </div>
+        )}
+        {!loading && databases.length > 0 && filteredDatabases.length === 0 && (
+          <div className="discovered-empty">
+            No databases match <strong>“{searchQuery.trim()}”</strong>.
+            <button type="button" className="discovered-empty-clear" onClick={() => setSearchQuery('')}>
+              Clear search
+            </button>
           </div>
         )}
       </div>
