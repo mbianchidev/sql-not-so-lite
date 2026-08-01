@@ -27,6 +27,10 @@ type scanResponse struct {
 	} `json:"files"`
 }
 
+type scanStatusResponse struct {
+	InProgress bool `json:"in_progress"`
+}
+
 type discoveredResponse struct {
 	ID        int64 `json:"id"`
 	IsReplica bool  `json:"is_replica"`
@@ -101,6 +105,28 @@ func TestHandleScanReturnsEmptyFilesArray(t *testing.T) {
 	}
 	if response.Files == nil {
 		t.Fatal("expected files to be an empty array, got null")
+	}
+}
+
+func TestHandleScanReturnsSharedStatus(t *testing.T) {
+	server := newScanTestServer(t, t.TempDir())
+	server.scanStatusMu.Lock()
+	server.scanInProgress = true
+	server.scanStatusMu.Unlock()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/scan", nil)
+	rec := httptest.NewRecorder()
+	server.handleScan(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+	var response scanStatusResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if !response.InProgress {
+		t.Fatal("expected scan status to report an active scan")
 	}
 }
 

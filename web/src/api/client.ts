@@ -171,6 +171,10 @@ export interface ScanResult {
   files: ScanFile[];
 }
 
+export interface ScanStatus {
+  in_progress: boolean;
+}
+
 function toDiscoveredDB(db: RawDiscoveredDB): DiscoveredDB {
   return {
     ID: db.id,
@@ -307,6 +311,7 @@ export const api = {
       method: 'POST',
       body: paths ? JSON.stringify({ paths }) : undefined,
     }),
+  getScanStatus: () => request<ScanStatus>('/api/scan'),
   listDiscovered: async () =>
     (await request<RawDiscoveredDB[]>('/api/discovered')).map(toDiscoveredDB),
   getDiscovered: async (id: number) =>

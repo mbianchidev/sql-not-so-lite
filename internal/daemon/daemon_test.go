@@ -25,14 +25,14 @@ func TestParseScanInterval(t *testing.T) {
 	}
 }
 
-func TestRunPeriodicScannerRunsAndStops(t *testing.T) {
+func TestRunPeriodicScannerRunsImmediatelyAndStops(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	calls := make(chan struct{}, 1)
 	done := make(chan struct{})
 
 	go func() {
 		defer close(done)
-		runPeriodicScanner(ctx, time.Millisecond, func(context.Context) (int, error) {
+		runPeriodicScanner(ctx, time.Hour, func(context.Context) (int, error) {
 			calls <- struct{}{}
 			return 1, nil
 		})
@@ -42,7 +42,7 @@ func TestRunPeriodicScannerRunsAndStops(t *testing.T) {
 	case <-calls:
 		cancel()
 	case <-time.After(time.Second):
-		t.Fatal("scheduled scan did not run")
+		t.Fatal("startup scan did not run immediately")
 	}
 
 	select {

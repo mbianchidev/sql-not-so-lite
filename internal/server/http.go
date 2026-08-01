@@ -31,15 +31,17 @@ import (
 var staticFiles embed.FS
 
 type HTTPServer struct {
-	svc        *service.DatabaseService
-	server     *http.Server
-	port       int
-	startTime  time.Time
-	catalog    *catalog.Catalog
-	cfg        *config.Config
-	scanMu     sync.Mutex
-	scanCtx    context.Context
-	scanCancel context.CancelFunc
+	svc            *service.DatabaseService
+	server         *http.Server
+	port           int
+	startTime      time.Time
+	catalog        *catalog.Catalog
+	cfg            *config.Config
+	scanMu         sync.Mutex
+	scanStatusMu   sync.RWMutex
+	scanInProgress bool
+	scanCtx        context.Context
+	scanCancel     context.CancelFunc
 }
 
 var (
@@ -513,6 +515,13 @@ func (s *HTTPServer) handleStats(w http.ResponseWriter, r *http.Request) {
 // --------------- Discovery / Replication handlers ---------------
 
 func (s *HTTPServer) handleScan(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodGet {
+		s.scanStatusMu.RLock()
+		inProgress := s.scanInProgress
+		s.scanStatusMu.RUnlock()
+		writeJSON(w, http.StatusOK, map[string]bool{"in_progress": inProgress})
+		return
+	}
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
@@ -552,6 +561,14 @@ func (s *HTTPServer) Scan(ctx context.Context, requestedRoots []string) (*ScanRe
 		return nil, ErrScanInProgress
 	}
 	defer s.scanMu.Unlock()
+	s.scanStatusMu.Lock()
+	s.scanInProgress = true
+	s.scanStatusMu.Unlock()
+	defer func() {
+		s.scanStatusMu.Lock()
+		s.scanInProgress = false
+		s.scanStatusMu.Unlock()
+	}()
 
 	if s.scanCtx != nil {
 		if err := s.scanCtx.Err(); err != nil {

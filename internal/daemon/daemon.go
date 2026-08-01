@@ -209,6 +209,19 @@ func runPeriodicScanner(
 	interval time.Duration,
 	scan func(context.Context) (int, error),
 ) {
+	run := func() {
+		count, err := scan(ctx)
+		switch {
+		case errors.Is(err, server.ErrScanInProgress):
+			log.Printf("Scheduled discovery scan skipped: %v", err)
+		case err != nil:
+			log.Printf("Scheduled discovery scan failed: %v", err)
+		default:
+			log.Printf("Scheduled discovery scan complete: %d database(s) found", count)
+		}
+	}
+	run()
+
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
@@ -220,15 +233,7 @@ func runPeriodicScanner(
 			if ctx.Err() != nil {
 				return
 			}
-			count, err := scan(ctx)
-			switch {
-			case errors.Is(err, server.ErrScanInProgress):
-				log.Printf("Scheduled discovery scan skipped: %v", err)
-			case err != nil:
-				log.Printf("Scheduled discovery scan failed: %v", err)
-			default:
-				log.Printf("Scheduled discovery scan complete: %d database(s) found", count)
-			}
+			run()
 		}
 	}
 }

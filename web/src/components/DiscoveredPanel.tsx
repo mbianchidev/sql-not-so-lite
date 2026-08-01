@@ -49,13 +49,15 @@ function statusLabel(status: string, isReplica: boolean, available: boolean): st
 export function DiscoveredPanel({ selectedId, onSelect }: Props) {
   const [databases, setDatabases] = useState<DiscoveredDB[]>([]);
   const [loading, setLoading] = useState(false);
-  const [scanning, setScanning] = useState(false);
+  const [manualScanning, setManualScanning] = useState(false);
+  const [serverScanning, setServerScanning] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [scanMessage, setScanMessage] = useState<string | null>(null);
   const [actionLoading, setActionLoading] = useState<number | null>(null);
   const [scanPath, setScanPath] = useState(DEFAULT_SCAN_PATH);
   const [searchQuery, setSearchQuery] = useState('');
-  const initialScanStarted = useRef(false);
+  const scanWasInProgress = useRef(false);
+  const scanning = manualScanning || serverScanning;
 
   const refresh = useCallback(async () => {
     try {
@@ -72,7 +74,7 @@ export function DiscoveredPanel({ selectedId, onSelect }: Props) {
 
   const scan = useCallback(async (paths: string[]): Promise<boolean> => {
     try {
-      setScanning(true);
+      setManualScanning(true);
       setError(null);
       setScanMessage(null);
       const result = await api.scanDatabases(paths);
@@ -82,10 +84,15 @@ export function DiscoveredPanel({ selectedId, onSelect }: Props) {
       );
       return true;
     } catch (err) {
+      if (err instanceof Error && err.message === 'scan already in progress') {
+        scanWasInProgress.current = true;
+        setServerScanning(true);
+        return false;
+      }
       setError(err instanceof Error ? err.message : 'Scan failed');
       return false;
     } finally {
-      setScanning(false);
+      setManualScanning(false);
     }
   }, [refresh]);
 
@@ -96,10 +103,33 @@ export function DiscoveredPanel({ selectedId, onSelect }: Props) {
   };
 
   useEffect(() => {
-    if (initialScanStarted.current) return;
-    initialScanStarted.current = true;
-    void scan([DEFAULT_SCAN_PATH]);
-  }, [scan]);
+    let active = true;
+
+    const pollScanStatus = async () => {
+      try {
+        const status = await api.getScanStatus();
+        if (!active) return;
+        const completed = scanWasInProgress.current && !status.in_progress;
+        scanWasInProgress.current = status.in_progress;
+        setServerScanning(status.in_progress);
+        if (completed) {
+          await refresh();
+        }
+      } catch (err) {
+        if (active) {
+          setError(err instanceof Error ? err.message : 'Failed to load scan status');
+        }
+      }
+    };
+
+    void refresh();
+    void pollScanStatus();
+    const interval = window.setInterval(() => void pollScanStatus(), 1000);
+    return () => {
+      active = false;
+      window.clearInterval(interval);
+    };
+  }, [refresh]);
 
   const handleReplicate = async (id: number) => {
     try {
