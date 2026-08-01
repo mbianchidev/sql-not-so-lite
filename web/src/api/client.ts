@@ -76,6 +76,7 @@ export interface DiscoveredDB {
   GitHubRepo: string;
   GitHubURL: string;
   Priority: string;
+  IsReplica: boolean;
 }
 
 export interface SnapshotInfo {
@@ -116,6 +117,7 @@ interface RawDiscoveredDB {
   github_repo: string;
   github_url: string;
   priority: string;
+  is_replica: boolean;
 }
 
 interface RawSnapshotInfo {
@@ -172,6 +174,7 @@ function toDiscoveredDB(db: RawDiscoveredDB): DiscoveredDB {
     GitHubRepo: db.github_repo,
     GitHubURL: db.github_url,
     Priority: db.priority,
+    IsReplica: db.is_replica,
   };
 }
 

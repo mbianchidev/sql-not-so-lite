@@ -25,6 +25,11 @@ type scanResponse struct {
 	} `json:"files"`
 }
 
+type discoveredResponse struct {
+	ID        int64 `json:"id"`
+	IsReplica bool  `json:"is_replica"`
+}
+
 func newScanTestServer(t *testing.T, scanRoot string) *HTTPServer {
 	t.Helper()
 	cat, err := catalog.Open(t.TempDir())
@@ -105,6 +110,7 @@ func TestHandleScanUsesConfiguredRootRecursively(t *testing.T) {
 	if err := os.MkdirAll(nestedDir, 0o755); err != nil {
 		t.Fatalf("create nested directory: %v", err)
 	}
+
 	dbPath := filepath.Join(nestedDir, "default.sqlite")
 	createHTTPTestDatabase(t, dbPath)
 
@@ -123,6 +129,75 @@ func TestHandleScanUsesConfiguredRootRecursively(t *testing.T) {
 	expectedPath := resolvedHTTPTestPath(t, dbPath)
 	if response.Files[0].SourcePath != expectedPath {
 		t.Fatalf("source path = %q, want %q", response.Files[0].SourcePath, expectedPath)
+	}
+}
+
+func TestHandleScanSkipsSnapshotDirectory(t *testing.T) {
+	scanRoot := t.TempDir()
+	snapshotDir := filepath.Join(scanRoot, "snapshots")
+	if err := os.MkdirAll(snapshotDir, 0o755); err != nil {
+		t.Fatalf("create snapshot directory: %v", err)
+	}
+	createHTTPTestDatabase(t, filepath.Join(snapshotDir, "v1.sqlite"))
+	createHTTPTestDatabase(t, filepath.Join(scanRoot, "source.sqlite"))
+
+	server := newScanTestServer(t, scanRoot)
+	server.cfg.Replicator.SnapshotDir = snapshotDir
+	req := httptest.NewRequest(http.MethodPost, "/api/scan", nil)
+	rec := httptest.NewRecorder()
+	server.handleScan(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+	response := decodeScanResponse(t, rec)
+	if response.Scanned != 1 || len(response.Files) != 1 {
+		t.Fatalf("expected only source database, got scanned=%d files=%d", response.Scanned, len(response.Files))
+	}
+	if response.Files[0].SourcePath != resolvedHTTPTestPath(t, filepath.Join(scanRoot, "source.sqlite")) {
+		t.Fatalf("unexpected scanned file: %s", response.Files[0].SourcePath)
+	}
+}
+
+func TestReplicaIsMarkedAndCannotBeReplicated(t *testing.T) {
+	scanRoot := t.TempDir()
+	replicaDir := filepath.Join(scanRoot, "replicas")
+	if err := os.MkdirAll(replicaDir, 0o755); err != nil {
+		t.Fatalf("create replica directory: %v", err)
+	}
+	replicaPath := filepath.Join(replicaDir, "managed.sqlite")
+	createHTTPTestDatabase(t, replicaPath)
+
+	server := newScanTestServer(t, scanRoot)
+	server.cfg.Replicator.ReplicaDir = replicaDir
+	id, err := server.catalog.UpsertDiscovered(&catalog.DiscoveredDB{
+		Name:       "managed",
+		SourcePath: replicaPath,
+		Status:     "discovered",
+	})
+	if err != nil {
+		t.Fatalf("catalog replica: %v", err)
+	}
+
+	listReq := httptest.NewRequest(http.MethodGet, "/api/discovered", nil)
+	listRec := httptest.NewRecorder()
+	server.handleDiscovered(listRec, listReq)
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("list status = %d, body = %s", listRec.Code, listRec.Body.String())
+	}
+	var discovered []discoveredResponse
+	if err := json.NewDecoder(listRec.Body).Decode(&discovered); err != nil {
+		t.Fatalf("decode discovered databases: %v", err)
+	}
+	if len(discovered) != 1 || !discovered[0].IsReplica {
+		t.Fatalf("expected marked replica, got %+v", discovered)
+	}
+
+	replicateReq := httptest.NewRequest(http.MethodPost, "/api/discovered/1/replicate", nil)
+	replicateRec := httptest.NewRecorder()
+	server.handleStartReplication(replicateRec, replicateReq, id)
+	if replicateRec.Code != http.StatusConflict {
+		t.Fatalf("replicate status = %d, want %d: %s", replicateRec.Code, http.StatusConflict, replicateRec.Body.String())
 	}
 }
 

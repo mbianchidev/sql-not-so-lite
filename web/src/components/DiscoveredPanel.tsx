@@ -21,7 +21,8 @@ function formatSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-function statusClass(status: string): string {
+function statusClass(status: string, isReplica: boolean): string {
+  if (isReplica) return 'replica';
   switch (status) {
     case 'replicating': return 'replicating';
     case 'paused': return 'paused';
@@ -30,7 +31,8 @@ function statusClass(status: string): string {
   }
 }
 
-function statusLabel(status: string): string {
+function statusLabel(status: string, isReplica: boolean): string {
+  if (isReplica) return 'Replica';
   switch (status) {
     case 'replicating': return 'Replicating';
     case 'paused': return 'Paused';
@@ -158,6 +160,7 @@ export function DiscoveredPanel({ selectedId, onSelect }: Props) {
       PRIORITY_LABELS[db.Priority],
       db.SQLiteVersion,
       db.JournalMode,
+      db.IsReplica ? 'replica' : '',
     ].some((value) => value?.toLocaleLowerCase().includes(query)));
   }, [databases, searchQuery]);
 
@@ -237,9 +240,11 @@ export function DiscoveredPanel({ selectedId, onSelect }: Props) {
             onClick={() => onSelect(selectedId === db.ID ? null : db.ID)}
           >
             <div className="discovered-item-header">
-              <span className={`status-indicator ${statusClass(db.Status)}`} />
+              <span className={`status-indicator ${statusClass(db.Status, db.IsReplica)}`} />
               <span className="discovered-name">{db.Name}</span>
-              <span className="discovered-status-label">{statusLabel(db.Status)}</span>
+              <span className={`discovered-status-label ${db.IsReplica ? 'replica' : ''}`}>
+                {statusLabel(db.Status, db.IsReplica)}
+              </span>
               <span className={`priority-badge priority-${db.Priority}`}>
                 {PRIORITY_LABELS[db.Priority] ?? db.Priority}
               </span>
@@ -275,7 +280,7 @@ export function DiscoveredPanel({ selectedId, onSelect }: Props) {
             </div>
 
             <div className="discovered-item-actions">
-              {(db.Status === 'discovered' || db.Status === 'paused' || db.Status === 'error') && (
+              {!db.IsReplica && (db.Status === 'discovered' || db.Status === 'paused' || db.Status === 'error') && (
                 <button
                   className="btn-sm"
                   onClick={(e) => { e.stopPropagation(); handleReplicate(db.ID); }}

@@ -29,7 +29,6 @@ func createTestDB(t *testing.T, path string) {
 	}
 }
 
-
 func TestValidateSQLite(t *testing.T) {
 	dir := t.TempDir()
 
@@ -40,6 +39,7 @@ func TestValidateSQLite(t *testing.T) {
 		if !ValidateSQLite(dbPath) {
 			t.Error("expected valid SQLite file to be detected")
 		}
+
 	})
 
 	t.Run("non-SQLite file", func(t *testing.T) {
@@ -68,6 +68,13 @@ func TestValidateSQLite(t *testing.T) {
 			t.Error("expected short file to be rejected")
 		}
 	})
+}
+
+func TestNewPreservesEmptyScanRoot(t *testing.T) {
+	scanner := New(config.ScannerConfig{})
+	if scanner.cfg.ScanRoot != "" {
+		t.Fatalf("empty scan root normalized to %q", scanner.cfg.ScanRoot)
+	}
 }
 
 func TestReadSQLiteHeader(t *testing.T) {
