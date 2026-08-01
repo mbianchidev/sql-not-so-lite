@@ -49,6 +49,8 @@ var (
 	ErrInvalidScanPath = errors.New("invalid scan path")
 )
 
+const discoveredQueryTimeout = 10 * time.Second
+
 type ScanFileResult struct {
 	ID            int64  `json:"id"`
 	Name          string `json:"name"`
@@ -797,7 +799,12 @@ func (s *HTTPServer) handleDiscoveredItem(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	switch parts[1] {
+	resourceParts := strings.SplitN(parts[1], "/", 2)
+	if len(resourceParts) > 1 && resourceParts[1] != "" {
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
+	switch resourceParts[0] {
 	case "replicate":
 		s.handleReplicate(w, r, id)
 	case "restore":
@@ -808,9 +815,296 @@ func (s *HTTPServer) handleDiscoveredItem(w http.ResponseWriter, r *http.Request
 		s.handleSchemaVersions(w, r, id)
 	case "transitions":
 		s.handleSchemaTransitions(w, r, id)
+	case "schema":
+		s.handleDiscoveredSchema(w, r, id)
+	case "table":
+		s.handleDiscoveredTable(w, r, id)
+	case "query":
+		s.handleDiscoveredQuery(w, r, id)
 	default:
 		writeError(w, http.StatusNotFound, "not found")
 	}
+}
+
+func (s *HTTPServer) openDiscoveredReadOnly(id int64) (*catalog.DiscoveredDB, *sql.DB, error) {
+	discovered, err := s.catalog.GetDiscovered(id)
+	if err != nil {
+		return nil, nil, err
+	}
+	info, err := os.Stat(discovered.SourcePath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			_ = s.catalog.UpdateAvailability(id, false)
+			return nil, nil, fmt.Errorf("database file is no longer available")
+		}
+		return nil, nil, fmt.Errorf("check database file: %w", err)
+	}
+	if info.IsDir() {
+		return nil, nil, fmt.Errorf("database path is a directory")
+	}
+	db, err := replicator.OpenReadOnly(discovered.SourcePath)
+	if err != nil {
+		return nil, nil, fmt.Errorf("open database read-only: %w", err)
+	}
+	return discovered, db, nil
+}
+
+func writeDiscoveredOpenError(w http.ResponseWriter, err error) {
+	if errors.Is(err, sql.ErrNoRows) {
+		writeError(w, http.StatusNotFound, "database not found")
+		return
+	}
+	writeError(w, http.StatusConflict, err.Error())
+}
+
+func (s *HTTPServer) handleDiscoveredSchema(w http.ResponseWriter, r *http.Request, id int64) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	_, db, err := s.openDiscoveredReadOnly(id)
+	if err != nil {
+		writeDiscoveredOpenError(w, err)
+		return
+	}
+	defer db.Close()
+
+	ctx, cancel := context.WithTimeout(r.Context(), discoveredQueryTimeout)
+	defer cancel()
+	tables, err := service.GetDatabaseSchema(ctx, db)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, tables)
+}
+
+func (s *HTTPServer) handleDiscoveredTable(w http.ResponseWriter, r *http.Request, id int64) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	tableName := r.URL.Query().Get("name")
+	if tableName == "" {
+		writeError(w, http.StatusBadRequest, "table name required")
+		return
+	}
+	limit := boundedQueryInt(r.URL.Query().Get("limit"), 100, 1, 500)
+	offset := boundedQueryInt(r.URL.Query().Get("offset"), 0, 0, 1_000_000_000)
+
+	_, db, err := s.openDiscoveredReadOnly(id)
+	if err != nil {
+		writeDiscoveredOpenError(w, err)
+		return
+	}
+	defer db.Close()
+
+	ctx, cancel := context.WithTimeout(r.Context(), discoveredQueryTimeout)
+	defer cancel()
+	var exists int
+	if err := db.QueryRowContext(
+		ctx,
+		"SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+		tableName,
+	).Scan(&exists); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "table not found")
+			return
+		}
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("check table: %v", err))
+		return
+	}
+
+	statement := fmt.Sprintf(
+		"SELECT * FROM %s LIMIT %d OFFSET %d",
+		quoteSQLiteIdentifier(tableName),
+		limit,
+		offset,
+	)
+	result, err := service.QueryDatabase(ctx, db, statement, nil, limit, 0)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (s *HTTPServer) handleDiscoveredQuery(w http.ResponseWriter, r *http.Request, id int64) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var req struct {
+		SQL    string   `json:"sql"`
+		Params []string `json:"params,omitempty"`
+		Limit  int      `json:"limit,omitempty"`
+		Offset int      `json:"offset,omitempty"`
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1024*1024)
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid query request: %v", err))
+		return
+	}
+	if err := validateReadOnlyQuery(req.SQL); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	req.Limit = boundedInt(req.Limit, 1000, 1, 1000)
+	req.Offset = boundedInt(req.Offset, 0, 0, 1_000_000_000)
+
+	_, db, err := s.openDiscoveredReadOnly(id)
+	if err != nil {
+		writeDiscoveredOpenError(w, err)
+		return
+	}
+	defer db.Close()
+
+	ctx, cancel := context.WithTimeout(r.Context(), discoveredQueryTimeout)
+	defer cancel()
+	result, err := service.QueryDatabase(ctx, db, req.SQL, req.Params, req.Limit, req.Offset)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func boundedQueryInt(value string, fallback, minimum, maximum int) int {
+	if value == "" {
+		return fallback
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil {
+		return fallback
+	}
+	return boundedInt(parsed, fallback, minimum, maximum)
+}
+
+func boundedInt(value, fallback, minimum, maximum int) int {
+	if value == 0 {
+		return fallback
+	}
+	if value < minimum {
+		return minimum
+	}
+	if value > maximum {
+		return maximum
+	}
+	return value
+}
+
+func quoteSQLiteIdentifier(identifier string) string {
+	return `"` + strings.ReplaceAll(identifier, `"`, `""`) + `"`
+}
+
+func validateReadOnlyQuery(statement string) error {
+	trimmed, err := trimLeadingSQLTrivia(statement)
+	if err != nil {
+		return err
+	}
+	if trimmed == "" {
+		return fmt.Errorf("query is required")
+	}
+	if terminator := sqlStatementTerminator(trimmed); terminator >= 0 {
+		trailing, err := trimLeadingSQLTrivia(trimmed[terminator+1:])
+		if err != nil {
+			return err
+		}
+		if trailing != "" {
+			return fmt.Errorf("only one SELECT statement is allowed")
+		}
+		trimmed = strings.TrimSpace(trimmed[:terminator])
+	}
+	fields := strings.Fields(trimmed)
+	if len(fields) == 0 {
+		return fmt.Errorf("query is required")
+	}
+	switch strings.ToUpper(fields[0]) {
+	case "SELECT", "WITH":
+		return nil
+	default:
+		return fmt.Errorf("only SELECT queries are allowed")
+	}
+}
+
+func trimLeadingSQLTrivia(statement string) (string, error) {
+	remaining := strings.TrimSpace(statement)
+	for {
+		switch {
+		case strings.HasPrefix(remaining, "--"):
+			if newline := strings.IndexByte(remaining, '\n'); newline >= 0 {
+				remaining = strings.TrimSpace(remaining[newline+1:])
+				continue
+			}
+			return "", nil
+		case strings.HasPrefix(remaining, "/*"):
+			end := strings.Index(remaining[2:], "*/")
+			if end < 0 {
+				return "", fmt.Errorf("unterminated SQL comment")
+			}
+			remaining = strings.TrimSpace(remaining[end+4:])
+			continue
+		default:
+			return remaining, nil
+		}
+	}
+}
+
+func sqlStatementTerminator(statement string) int {
+	var quote byte
+	lineComment := false
+	blockComment := false
+	for i := 0; i < len(statement); i++ {
+		current := statement[i]
+		next := byte(0)
+		if i+1 < len(statement) {
+			next = statement[i+1]
+		}
+		if lineComment {
+			if current == '\n' {
+				lineComment = false
+			}
+			continue
+		}
+		if blockComment {
+			if current == '*' && next == '/' {
+				blockComment = false
+				i++
+			}
+			continue
+		}
+		if quote != 0 {
+			if quote == '[' {
+				if current == ']' {
+					quote = 0
+				}
+				continue
+			}
+			if current == quote {
+				if next == quote {
+					i++
+				} else {
+					quote = 0
+				}
+			}
+			continue
+		}
+		switch {
+		case current == '-' && next == '-':
+			lineComment = true
+			i++
+		case current == '/' && next == '*':
+			blockComment = true
+			i++
+		case current == '\'', current == '"', current == '`', current == '[':
+			quote = current
+		case current == ';':
+			return i
+		}
+	}
+	return -1
 }
 
 func (s *HTTPServer) handleDiscoveredGet(w http.ResponseWriter, r *http.Request, id int64) {

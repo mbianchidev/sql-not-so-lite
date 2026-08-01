@@ -314,6 +314,17 @@ export const api = {
   getScanStatus: () => request<ScanStatus>('/api/scan'),
   listDiscovered: async () =>
     (await request<RawDiscoveredDB[]>('/api/discovered')).map(toDiscoveredDB),
+  getDiscoveredSchema: (id: number) =>
+    request<TableInfo[]>(`/api/discovered/${id}/schema`),
+  getDiscoveredTable: (id: number, table: string, limit = 100, offset = 0) =>
+    request<QueryResult>(
+      `/api/discovered/${id}/table?name=${encodeURIComponent(table)}&limit=${limit}&offset=${offset}`,
+    ),
+  queryDiscovered: (id: number, sql: string, params?: string[]) =>
+    request<QueryResult>(`/api/discovered/${id}/query`, {
+      method: 'POST',
+      body: JSON.stringify({ sql, params, limit: 1000 }),
+    }),
   getDiscovered: async (id: number) =>
     toDiscoveredDB(await request<RawDiscoveredDB>(`/api/discovered/${id}`)),
   deleteDiscovered: (id: number) =>

@@ -715,7 +715,7 @@ func (s *DatabaseService) InsertRow(
 	if err != nil {
 		return nil, err
 	}
-	table, err := s.getTableInfo(entry.DB, tableName)
+	table, err := getTableInfo(ctx, entry.DB, tableName)
 	if err != nil {
 		return nil, fmt.Errorf("read table schema: %w", err)
 	}
@@ -773,12 +773,15 @@ func (s *DatabaseService) InsertRow(
 	return &ExecResult{RowsAffected: rowsAffected, LastInsertID: lastID}, nil
 }
 
-func (s *DatabaseService) Query(_ context.Context, dbName, sqlStr string, params []string, limit, offset int) (*QueryResult, error) {
+func (s *DatabaseService) Query(ctx context.Context, dbName, sqlStr string, params []string, limit, offset int) (*QueryResult, error) {
 	entry, err := s.manager.Get(dbName)
 	if err != nil {
 		return nil, err
 	}
+	return QueryDatabase(ctx, entry.DB, sqlStr, params, limit, offset)
+}
 
+func QueryDatabase(ctx context.Context, db *sql.DB, sqlStr string, params []string, limit, offset int) (*QueryResult, error) {
 	if limit <= 0 {
 		limit = 1000
 	}
@@ -787,7 +790,7 @@ func (s *DatabaseService) Query(_ context.Context, dbName, sqlStr string, params
 	}
 
 	args := stringsToInterfaces(params)
-	rows, err := entry.DB.Query(sqlStr, args...)
+	rows, err := db.QueryContext(ctx, sqlStr, args...)
 	if err != nil {
 		return nil, fmt.Errorf("query failed: %w", err)
 	}
@@ -811,7 +814,7 @@ func (s *DatabaseService) Query(_ context.Context, dbName, sqlStr string, params
 		columns[i] = Column{Name: name, Type: typeName}
 	}
 
-	var resultRows [][]string
+	resultRows := make([][]string, 0)
 	skipped := 0
 	for rows.Next() {
 		if skipped < offset {
@@ -822,7 +825,9 @@ func (s *DatabaseService) Query(_ context.Context, dbName, sqlStr string, params
 			for i := range vals {
 				ptrs[i] = &vals[i]
 			}
-			rows.Scan(ptrs...)
+			if err := rows.Scan(ptrs...); err != nil {
+				return nil, fmt.Errorf("failed to scan skipped row: %w", err)
+			}
 			continue
 		}
 
@@ -850,6 +855,9 @@ func (s *DatabaseService) Query(_ context.Context, dbName, sqlStr string, params
 		}
 		resultRows = append(resultRows, row)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("query rows failed: %w", err)
+	}
 
 	return &QueryResult{
 		Columns:    columns,
@@ -858,14 +866,17 @@ func (s *DatabaseService) Query(_ context.Context, dbName, sqlStr string, params
 	}, nil
 }
 
-func (s *DatabaseService) GetSchema(_ context.Context, dbName string) ([]TableInfo, error) {
+func (s *DatabaseService) GetSchema(ctx context.Context, dbName string) ([]TableInfo, error) {
 	entry, err := s.manager.Get(dbName)
 	if err != nil {
 		return nil, err
 	}
+	return GetDatabaseSchema(ctx, entry.DB)
+}
 
+func GetDatabaseSchema(ctx context.Context, db *sql.DB) ([]TableInfo, error) {
 	// Collect table names first, then close rows before querying each table
-	rows, err := entry.DB.Query("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
+	rows, err := db.QueryContext(ctx, "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
 	if err != nil {
 		return nil, fmt.Errorf("failed to list tables: %w", err)
 	}
@@ -878,25 +889,38 @@ func (s *DatabaseService) GetSchema(_ context.Context, dbName string) ([]TableIn
 		}
 		tableNames = append(tableNames, name)
 	}
-	rows.Close()
+	if err := rows.Close(); err != nil {
+		return nil, fmt.Errorf("close table list: %w", err)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list tables: %w", err)
+	}
 
 	var tables []TableInfo
 	for _, name := range tableNames {
-		tableInfo, err := s.getTableInfo(entry.DB, name)
+		tableInfo, err := getTableInfo(ctx, db, name)
 		if err != nil {
-			continue
+			return nil, fmt.Errorf("read table %q: %w", name, err)
 		}
 		tables = append(tables, *tableInfo)
 	}
 
+	if tables == nil {
+		tables = []TableInfo{}
+	}
 	return tables, nil
 }
 
-func (s *DatabaseService) getTableInfo(db *sql.DB, tableName string) (*TableInfo, error) {
-	info := &TableInfo{Name: tableName}
+func getTableInfo(ctx context.Context, db *sql.DB, tableName string) (*TableInfo, error) {
+	info := &TableInfo{
+		Name:    tableName,
+		Columns: []ColumnInfo{},
+		Indexes: []IndexInfo{},
+	}
 
 	// Get columns — collect and close before next query (single-conn DB)
-	pragmaRows, err := db.Query(
+	pragmaRows, err := db.QueryContext(
+		ctx,
 		`SELECT cid, name, type, "notnull", dflt_value, pk FROM pragma_table_info(?)`,
 		tableName,
 	)
@@ -911,7 +935,8 @@ func (s *DatabaseService) getTableInfo(db *sql.DB, tableName string) (*TableInfo
 		var pk int
 
 		if err := pragmaRows.Scan(&cid, &name, &colType, &notNull, &defaultVal, &pk); err != nil {
-			continue
+			pragmaRows.Close()
+			return nil, err
 		}
 
 		info.Columns = append(info.Columns, ColumnInfo{
@@ -922,7 +947,13 @@ func (s *DatabaseService) getTableInfo(db *sql.DB, tableName string) (*TableInfo
 			PrimaryKey:   pk > 0,
 		})
 	}
-	pragmaRows.Close()
+	if err := pragmaRows.Err(); err != nil {
+		pragmaRows.Close()
+		return nil, err
+	}
+	if err := pragmaRows.Close(); err != nil {
+		return nil, err
+	}
 
 	// Get indexes — collect index names first, then query columns
 	type rawIdx struct {
@@ -931,52 +962,77 @@ func (s *DatabaseService) getTableInfo(db *sql.DB, tableName string) (*TableInfo
 	}
 	var rawIndexes []rawIdx
 
-	idxRows, err := db.Query(
+	idxRows, err := db.QueryContext(
+		ctx,
 		`SELECT seq, name, "unique", origin, partial FROM pragma_index_list(?)`,
 		tableName,
 	)
-	if err == nil {
-		for idxRows.Next() {
-			var seq int
-			var name string
-			var unique int
-			var origin, partial string
+	if err != nil {
+		return nil, err
+	}
+	for idxRows.Next() {
+		var seq int
+		var name string
+		var unique int
+		var origin string
+		var partial int
 
-			if err := idxRows.Scan(&seq, &name, &unique, &origin, &partial); err != nil {
-				continue
-			}
-			rawIndexes = append(rawIndexes, rawIdx{name: name, unique: unique == 1})
+		if err := idxRows.Scan(&seq, &name, &unique, &origin, &partial); err != nil {
+			idxRows.Close()
+			return nil, err
 		}
+		rawIndexes = append(rawIndexes, rawIdx{name: name, unique: unique == 1})
+	}
+	if err := idxRows.Err(); err != nil {
 		idxRows.Close()
+		return nil, err
+	}
+	if err := idxRows.Close(); err != nil {
+		return nil, err
 	}
 
 	for _, ri := range rawIndexes {
-		idx := IndexInfo{Name: ri.name, Unique: ri.unique}
+		idx := IndexInfo{Name: ri.name, Unique: ri.unique, Columns: []string{}}
 
-		colRows, err := db.Query(
+		colRows, err := db.QueryContext(
+			ctx,
 			`SELECT seqno, cid, name FROM pragma_index_info(?)`,
 			ri.name,
 		)
-		if err == nil {
-			for colRows.Next() {
-				var seqno, cid int
-				var colName string
-				if err := colRows.Scan(&seqno, &cid, &colName); err != nil {
-					continue
-				}
-				idx.Columns = append(idx.Columns, colName)
+		if err != nil {
+			return nil, err
+		}
+		for colRows.Next() {
+			var seqno, cid int
+			var colName sql.NullString
+			if err := colRows.Scan(&seqno, &cid, &colName); err != nil {
+				colRows.Close()
+				return nil, err
 			}
+			if colName.Valid {
+				idx.Columns = append(idx.Columns, colName.String)
+			}
+		}
+		if err := colRows.Err(); err != nil {
 			colRows.Close()
+			return nil, err
+		}
+		if err := colRows.Close(); err != nil {
+			return nil, err
 		}
 		info.Indexes = append(info.Indexes, idx)
 	}
 
 	// Get row count
 	var count int64
-	err = db.QueryRow(fmt.Sprintf("SELECT COUNT(*) FROM \"%s\"", strings.ReplaceAll(tableName, "\"", "\"\""))).Scan(&count)
-	if err == nil {
-		info.RowCount = count
+	err = db.QueryRowContext(
+		ctx,
+		fmt.Sprintf("SELECT COUNT(*) FROM \"%s\"", strings.ReplaceAll(tableName, "\"", "\"\"")),
+	).Scan(&count)
+	if err != nil {
+		return nil, err
 	}
+	info.RowCount = count
 
 	return info, nil
 }

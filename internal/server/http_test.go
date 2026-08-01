@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -574,6 +575,179 @@ func TestScanStopsAfterServerCancellation(t *testing.T) {
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("Scan error = %v, want context.Canceled", err)
 	}
+}
+
+func TestDiscoveredReadOnlyInspector(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "external.sqlite")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`
+		CREATE TABLE items (
+			id INTEGER PRIMARY KEY,
+			name TEXT NOT NULL,
+			score REAL DEFAULT 0
+		);
+		CREATE INDEX items_lower_name ON items(lower(name));
+		INSERT INTO items (name, score) VALUES ('one', 1.5), ('two', 2.5);
+	`); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	server := newScanTestServer(t, root)
+	id, err := server.catalog.UpsertDiscovered(&catalog.DiscoveredDB{
+		Name:       "external",
+		SourcePath: path,
+		Status:     "discovered",
+		Available:  true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	schemaRequest := httptest.NewRequest(http.MethodGet, fmt.Sprintf("/api/discovered/%d/schema", id), nil)
+	schemaResponse := httptest.NewRecorder()
+	server.handleDiscoveredItem(schemaResponse, schemaRequest)
+	if schemaResponse.Code != http.StatusOK {
+		t.Fatalf("schema status = %d, body = %s", schemaResponse.Code, schemaResponse.Body.String())
+	}
+	var schema []service.TableInfo
+	if err := json.Unmarshal(schemaResponse.Body.Bytes(), &schema); err != nil {
+		t.Fatal(err)
+	}
+	if len(schema) != 1 || schema[0].Name != "items" || len(schema[0].Columns) != 3 {
+		t.Fatalf("unexpected schema: %#v", schema)
+	}
+	if len(schema[0].Indexes) != 1 || schema[0].Indexes[0].Columns == nil {
+		t.Fatalf("unexpected expression index: %#v", schema[0].Indexes)
+	}
+
+	tableRequest := httptest.NewRequest(
+		http.MethodGet,
+		fmt.Sprintf("/api/discovered/%d/table?name=items&limit=1&offset=1", id),
+		nil,
+	)
+	tableResponse := httptest.NewRecorder()
+	server.handleDiscoveredItem(tableResponse, tableRequest)
+	if tableResponse.Code != http.StatusOK {
+		t.Fatalf("table status = %d, body = %s", tableResponse.Code, tableResponse.Body.String())
+	}
+	tableResult := decodeQueryResult(t, tableResponse)
+	if len(tableResult.Rows) != 1 || tableResult.Rows[0][1] != "two" {
+		t.Fatalf("unexpected table rows: %#v", tableResult.Rows)
+	}
+
+	queryBody := bytes.NewBufferString(`{"sql":"SELECT name, score FROM items ORDER BY id","limit":10}`)
+	queryRequest := httptest.NewRequest(
+		http.MethodPost,
+		fmt.Sprintf("/api/discovered/%d/query", id),
+		queryBody,
+	)
+	queryResponse := httptest.NewRecorder()
+	server.handleDiscoveredItem(queryResponse, queryRequest)
+	if queryResponse.Code != http.StatusOK {
+		t.Fatalf("query status = %d, body = %s", queryResponse.Code, queryResponse.Body.String())
+	}
+	queryResult := decodeQueryResult(t, queryResponse)
+	if len(queryResult.Rows) != 2 || queryResult.Rows[0][0] != "one" {
+		t.Fatalf("unexpected query rows: %#v", queryResult.Rows)
+	}
+
+	mutationBody := bytes.NewBufferString(`{"sql":"SELECT * FROM items; DELETE FROM items"}`)
+	mutationRequest := httptest.NewRequest(
+		http.MethodPost,
+		fmt.Sprintf("/api/discovered/%d/query", id),
+		mutationBody,
+	)
+	mutationResponse := httptest.NewRecorder()
+	server.handleDiscoveredItem(mutationResponse, mutationRequest)
+	if mutationResponse.Code != http.StatusBadRequest {
+		t.Fatalf("mutation status = %d, body = %s", mutationResponse.Code, mutationResponse.Body.String())
+	}
+
+	verify, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer verify.Close()
+	var count int
+	if err := verify.QueryRow("SELECT COUNT(*) FROM items").Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 2 {
+		t.Fatalf("row count = %d, want 2", count)
+	}
+
+	extraPathRequest := httptest.NewRequest(
+		http.MethodGet,
+		fmt.Sprintf("/api/discovered/%d/schema/extra", id),
+		nil,
+	)
+	extraPathResponse := httptest.NewRecorder()
+	server.handleDiscoveredItem(extraPathResponse, extraPathRequest)
+	if extraPathResponse.Code != http.StatusNotFound {
+		t.Fatalf("extra path status = %d, body = %s", extraPathResponse.Code, extraPathResponse.Body.String())
+	}
+}
+
+func TestDiscoveredInspectorReportsMissingFile(t *testing.T) {
+	server := newScanTestServer(t, t.TempDir())
+	id, err := server.catalog.UpsertDiscovered(&catalog.DiscoveredDB{
+		Name:       "missing",
+		SourcePath: filepath.Join(t.TempDir(), "missing.sqlite"),
+		Status:     "discovered",
+		Available:  true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, fmt.Sprintf("/api/discovered/%d/schema", id), nil)
+	rec := httptest.NewRecorder()
+	server.handleDiscoveredItem(rec, req)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestValidateReadOnlyQuery(t *testing.T) {
+	for _, query := range []string{
+		"SELECT 1",
+		"SELECT ';' AS value;",
+		"-- comment\nSELECT 1;",
+		"WITH values_cte(value) AS (SELECT 1) SELECT value FROM values_cte",
+	} {
+		if err := validateReadOnlyQuery(query); err != nil {
+			t.Errorf("validateReadOnlyQuery(%q) = %v", query, err)
+		}
+	}
+	for _, query := range []string{
+		"",
+		"DELETE FROM items",
+		"PRAGMA query_only = 0",
+		"SELECT 1; DELETE FROM items",
+		"SELECT 1; SELECT 2",
+		"/* unterminated",
+	} {
+		if err := validateReadOnlyQuery(query); err == nil {
+			t.Errorf("validateReadOnlyQuery(%q) unexpectedly succeeded", query)
+		}
+	}
+}
+
+func decodeQueryResult(t *testing.T, rec *httptest.ResponseRecorder) service.QueryResult {
+	t.Helper()
+	var result service.QueryResult
+	if err := json.Unmarshal(rec.Body.Bytes(), &result); err != nil {
+		t.Fatalf("decode query result: %v", err)
+	}
+	return result
 }
 
 func setupHTTPTestServer(t *testing.T) (*HTTPServer, *catalog.Catalog) {

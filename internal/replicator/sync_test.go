@@ -21,6 +21,7 @@ func setupSourceAndReplica(t *testing.T) (srcPath, repPath string, srcDB, repDB 
 	if err != nil {
 		t.Fatalf("failed to create source: %v", err)
 	}
+
 	srcDB.SetMaxOpenConns(1)
 	t.Cleanup(func() { srcDB.Close() })
 
@@ -41,6 +42,42 @@ func setupSourceAndReplica(t *testing.T) (srcPath, repPath string, srcDB, repDB 
 	repDB.Exec("CREATE TABLE logs (id INTEGER PRIMARY KEY, msg TEXT)")
 
 	return
+}
+
+func TestOpenReadOnlyUsesEscapedReadOnlyURI(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "source # files")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "read only.sqlite")
+	source, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := source.Exec("CREATE TABLE items (id INTEGER PRIMARY KEY, value TEXT); INSERT INTO items (value) VALUES ('one')"); err != nil {
+		source.Close()
+		t.Fatal(err)
+	}
+	if err := source.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	readOnly, err := OpenReadOnly(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer readOnly.Close()
+
+	var value string
+	if err := readOnly.QueryRow("SELECT value FROM items").Scan(&value); err != nil {
+		t.Fatalf("read escaped database path: %v", err)
+	}
+	if value != "one" {
+		t.Fatalf("value = %q, want one", value)
+	}
+	if _, err := readOnly.Exec("PRAGMA query_only=0; INSERT INTO items (value) VALUES ('two')"); err == nil {
+		t.Fatal("expected read-only URI to reject writes after disabling query_only")
+	}
 }
 
 func TestSyncTable(t *testing.T) {

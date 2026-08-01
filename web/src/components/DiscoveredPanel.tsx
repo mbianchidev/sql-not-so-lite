@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { api, type DiscoveredDB } from '../api/client';
-import { SchemaTimeline } from './SchemaTimeline';
+import { DiscoveredInspector } from './DiscoveredInspector';
 
 interface Props {
   selectedId: number | null;
@@ -213,7 +213,7 @@ export function DiscoveredPanel({ selectedId, onSelect }: Props) {
     ].some((value) => value?.toLocaleLowerCase().includes(query)));
   }, [databases, searchQuery]);
 
-  const selected = filteredDatabases.find((db) => db.ID === selectedId) ?? null;
+  const selected = databases.find((db) => db.ID === selectedId) ?? null;
   const isFiltering = searchQuery.trim().length > 0;
 
   return (
@@ -266,6 +266,12 @@ export function DiscoveredPanel({ selectedId, onSelect }: Props) {
               Clear
             </button>
           )}
+        </div>
+      )}
+
+      {selected && (
+        <div className="discovered-detail">
+          <DiscoveredInspector key={selected.ID} database={selected} />
         </div>
       )}
 
@@ -383,11 +389,6 @@ export function DiscoveredPanel({ selectedId, onSelect }: Props) {
         )}
       </div>
 
-      {selected && (
-        <div className="discovered-detail">
-          <SchemaTimeline dbId={selected.ID} dbName={selected.Name} />
-        </div>
-      )}
     </div>
   );
 }

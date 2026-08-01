@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
+	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -441,7 +442,18 @@ func InitialSync(sourcePath, replicaPath string) ([]string, error) {
 // OpenReadOnly opens a SQLite database in read-only mode without modifying
 // journal settings. Used for source databases we don't own.
 func OpenReadOnly(path string) (*sql.DB, error) {
-	db, err := sql.Open("sqlite", path+"?_pragma=busy_timeout(5000)&_pragma=query_only(1)")
+	absolutePath, err := filepath.Abs(path)
+	if err != nil {
+		return nil, fmt.Errorf("resolve read-only path: %w", err)
+	}
+	uriPath := filepath.ToSlash(absolutePath)
+	if filepath.VolumeName(absolutePath) != "" && !strings.HasPrefix(uriPath, "/") {
+		uriPath = "/" + uriPath
+	}
+	dsn := (&url.URL{Scheme: "file", Path: uriPath}).String() +
+		"?mode=ro&_pragma=busy_timeout(5000)&_pragma=query_only(1)"
+
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open read-only: %w", err)
 	}

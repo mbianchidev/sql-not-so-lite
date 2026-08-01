@@ -194,6 +194,9 @@ grpcurl -plaintext -d '{"database":"myapp","sql":"SELECT * FROM users","limit":1
 | GET | `/api/discovered` | List discovered databases |
 | GET | `/api/discovered/:id` | Get discovered DB details |
 | PATCH | `/api/discovered/:id` | Set favorite state `{"favorite":true}` |
+| GET | `/api/discovered/:id/schema` | Inspect the current source schema read-only |
+| GET | `/api/discovered/:id/table?name=TABLE&limit=N&offset=N` | Preview source table rows read-only |
+| POST | `/api/discovered/:id/query` | Run one read-only SELECT query `{"sql":"SELECT ..."}` |
 | POST | `/api/discovered/:id/replicate` | Start replication |
 | DELETE | `/api/discovered/:id/replicate` | Stop replication |
 | POST | `/api/discovered/:id/restore` | Restore `{"version":N}` |
@@ -212,6 +215,7 @@ Access at `http://localhost:9147` when the daemon is running.
 - **Results**: Sortable table with CSV/JSON export
 - **Dark/Light theme**: Toggle in header
 - **Discovered databases**: Dedicated menu with search by name, path, repository, status, and database metadata
+- **Read-only inspector**: Explore discovered schemas, fields, indexes, table rows, and SELECT results without opening the source for writes
 - **Replication status**: Live indicators for replication state per database
 - **Schema timeline**: Version history viewer with schema transition diffs
 - **Snapshot restore**: One-click restore from any available snapshot
