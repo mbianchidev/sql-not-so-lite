@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	_ "modernc.org/sqlite"
@@ -20,6 +21,7 @@ func setupSourceAndReplica(t *testing.T) (srcPath, repPath string, srcDB, repDB 
 	if err != nil {
 		t.Fatalf("failed to create source: %v", err)
 	}
+
 	srcDB.SetMaxOpenConns(1)
 	t.Cleanup(func() { srcDB.Close() })
 
@@ -40,6 +42,42 @@ func setupSourceAndReplica(t *testing.T) (srcPath, repPath string, srcDB, repDB 
 	repDB.Exec("CREATE TABLE logs (id INTEGER PRIMARY KEY, msg TEXT)")
 
 	return
+}
+
+func TestOpenReadOnlyUsesEscapedReadOnlyURI(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "source # files")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "read only.sqlite")
+	source, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := source.Exec("CREATE TABLE items (id INTEGER PRIMARY KEY, value TEXT); INSERT INTO items (value) VALUES ('one')"); err != nil {
+		source.Close()
+		t.Fatal(err)
+	}
+	if err := source.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	readOnly, err := OpenReadOnly(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer readOnly.Close()
+
+	var value string
+	if err := readOnly.QueryRow("SELECT value FROM items").Scan(&value); err != nil {
+		t.Fatalf("read escaped database path: %v", err)
+	}
+	if value != "one" {
+		t.Fatalf("value = %q, want one", value)
+	}
+	if _, err := readOnly.Exec("PRAGMA query_only=0; INSERT INTO items (value) VALUES ('two')"); err == nil {
+		t.Fatal("expected read-only URI to reject writes after disabling query_only")
+	}
 }
 
 func TestSyncTable(t *testing.T) {
@@ -176,5 +214,136 @@ func TestSyncTable_NonExistentTable(t *testing.T) {
 	err := SyncTable(srcDB, repDB, "nonexistent")
 	if err == nil {
 		t.Error("expected error for non-existent table")
+	}
+}
+
+func TestDifferentialSyncSkipsUnchangedTables(t *testing.T) {
+	dir := t.TempDir()
+	srcPath := filepath.Join(dir, "source.sqlite")
+	replicaPath := filepath.Join(dir, "replica.sqlite")
+	source, err := sql.Open("sqlite", srcPath+"?_pragma=journal_mode(wal)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer source.Close()
+	if _, err := source.Exec(`
+		CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT);
+		CREATE TABLE logs (id INTEGER PRIMARY KEY, message TEXT);
+		INSERT INTO users (name) VALUES ('alice');
+		INSERT INTO logs (message) VALUES ('started');
+		CREATE INDEX users_name_idx ON users(name);
+		CREATE TRIGGER users_name_required
+		BEFORE INSERT ON users
+		WHEN NEW.name = ''
+		BEGIN
+			SELECT RAISE(ABORT, 'name required');
+		END;
+	`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := InitialSync(srcPath, replicaPath); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := source.Exec("INSERT INTO users (name) VALUES ('bob')"); err != nil {
+		t.Fatal(err)
+	}
+
+	changed, err := DifferentialSync(srcPath, replicaPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"users"}; !reflect.DeepEqual(changed, want) {
+		t.Fatalf("changed tables = %v, want %v", changed, want)
+	}
+
+	replica, err := sql.Open("sqlite", replicaPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer replica.Close()
+	var count int
+	if err := replica.QueryRow("SELECT COUNT(*) FROM users").Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 2 {
+		t.Fatalf("replica user count = %d, want 2", count)
+	}
+	for _, objectName := range []string{"users_name_idx", "users_name_required"} {
+		var exists int
+		if err := replica.QueryRow(
+			"SELECT COUNT(*) FROM sqlite_master WHERE name = ?",
+			objectName,
+		).Scan(&exists); err != nil {
+			t.Fatal(err)
+		}
+		if exists != 1 {
+			t.Fatalf("schema object %q was not preserved", objectName)
+		}
+	}
+}
+
+func TestDifferentialSyncReturnsNoChanges(t *testing.T) {
+	dir := t.TempDir()
+	srcPath := createTestDB(t, dir, "source.sqlite")
+	replicaPath := filepath.Join(dir, "replica.sqlite")
+	if _, err := InitialSync(srcPath, replicaPath); err != nil {
+		t.Fatal(err)
+	}
+
+	changed, err := DifferentialSync(srcPath, replicaPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(changed) != 0 {
+		t.Fatalf("changed tables = %v, want none", changed)
+	}
+}
+
+func TestDifferentialSyncRemovesDeletedTables(t *testing.T) {
+	dir := t.TempDir()
+	srcPath := createTestDB(t, dir, "source.sqlite")
+	source, err := sql.Open("sqlite", srcPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := source.Exec("CREATE TABLE obsolete (id INTEGER PRIMARY KEY)"); err != nil {
+		source.Close()
+		t.Fatal(err)
+	}
+	source.Close()
+	replicaPath := filepath.Join(dir, "replica.sqlite")
+	if _, err := InitialSync(srcPath, replicaPath); err != nil {
+		t.Fatal(err)
+	}
+	source, err = sql.Open("sqlite", srcPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := source.Exec("DROP TABLE obsolete"); err != nil {
+		source.Close()
+		t.Fatal(err)
+	}
+	source.Close()
+
+	changed, err := DifferentialSync(srcPath, replicaPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"obsolete"}; !reflect.DeepEqual(changed, want) {
+		t.Fatalf("changed tables = %v, want %v", changed, want)
+	}
+	replica, err := sql.Open("sqlite", replicaPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer replica.Close()
+	var count int
+	if err := replica.QueryRow(
+		"SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'obsolete'",
+	).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatal("deleted table still exists in replica")
 	}
 }

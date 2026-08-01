@@ -26,12 +26,13 @@ Lightweight SQLite-as-a-service daemon. Manages multiple SQLite databases as fil
 
 - **Multi-database**: Each app creates its own `.sqlite` file
 - **gRPC API**: Typed, high-performance API for applications
-- **Web GUI**: Browse tables, create multi-field tables, view schemas, and run SQL queries with Monaco editor
+- **Web GUI**: Browse and insert rows, create tables with ordered fields, view schemas, and run SQL queries with Monaco editor
 - **Idle management**: Closes idle connections automatically, stays dormant when unused (~5-10MB RSS)
 - **Single binary**: GUI embedded via `go:embed` — one file to run
 - **Cross-platform**: macOS (launchd), Linux (systemd), Docker
 - **Database discovery**: Scans `$HOME` for SQLite databases across containers, app data dirs, and workspaces
-- **WAL-aware replication**: Replicates discovered databases with WAL-optimized change detection
+- **Persistent discovery**: Keeps scan history, missing-file state, and favorites across restarts
+- **Differential replication**: Resumes active replicas after restart and updates only changed tables
 - **Point-in-time recovery**: Restore any discovered database from snapshots
 - **Schema versioning**: Tracks schema changes with transition history (v0 = initial creation)
 - **GitHub repo detection**: Links discovered databases to their upstream GitHub repositories
@@ -117,7 +118,7 @@ file = "~/.sql-not-so-lite/sqnsl.log"
 scan_root = "~/"
 file_extensions = [".sqlite", ".db", ".sqlite3", ".sqlitedb"]
 exclude_patterns = ["node_modules", ".git/objects", "*.tmp"]
-scan_interval = "1h"
+scan_interval = "30m"
 
 [replicator]
 enabled = true
@@ -184,12 +185,18 @@ grpcurl -plaintext -d '{"database":"myapp","sql":"SELECT * FROM users","limit":1
 | POST | `/api/databases/:name/tables` | Create a table with its initial fields |
 | GET | `/api/databases/:name/tables/:table?limit=N&offset=N` | Table data |
 | POST | `/api/databases/:name/tables/:table/columns` | Add a field to an existing table |
+| PUT | `/api/databases/:name/tables/:table/columns` | Edit a field's name, type, nullability, and default |
+| POST | `/api/databases/:name/tables/:table/rows` | Insert a row with explicit values, NULLs, or field defaults |
 | POST | `/api/databases/:name/query` | Execute SQL `{"sql":"..."}` |
 | GET | `/api/health` | Health check |
 | GET | `/api/stats` | Memory, connections, uptime |
 | POST | `/api/scan` | Scan the default root or `{"paths":["/absolute/path"]}` |
 | GET | `/api/discovered` | List discovered databases |
 | GET | `/api/discovered/:id` | Get discovered DB details |
+| PATCH | `/api/discovered/:id` | Set favorite state `{"favorite":true}` |
+| GET | `/api/discovered/:id/schema` | Inspect the current source schema read-only |
+| GET | `/api/discovered/:id/table?name=TABLE&limit=N&offset=N` | Preview source table rows read-only |
+| POST | `/api/discovered/:id/query` | Run one read-only SELECT query `{"sql":"SELECT ..."}` |
 | POST | `/api/discovered/:id/replicate` | Start replication |
 | DELETE | `/api/discovered/:id/replicate` | Stop replication |
 | POST | `/api/discovered/:id/restore` | Restore `{"version":N}` |
@@ -202,23 +209,26 @@ grpcurl -plaintext -d '{"database":"myapp","sql":"SELECT * FROM users","limit":1
 Access at `http://localhost:9147` when the daemon is running.
 
 - **Sidebar**: Lists all databases with active/idle status
-- **Table Browser**: Click a database → see tables → click to browse rows
-- **Schema Viewer**: Create tables and fields; inspect column types, constraints, indexes, and foreign keys
+- **Table Browser**: Browse rows and add records with explicit values, NULLs, or field defaults
+- **Schema Viewer**: Create tables, reorder fields before creation, and edit existing field names, types, nullability, and defaults
 - **SQL Editor**: Monaco-based with syntax highlighting and Ctrl+Enter execution
 - **Results**: Sortable table with CSV/JSON export
 - **Dark/Light theme**: Toggle in header
 - **Discovered databases**: Dedicated menu with search by name, path, repository, status, and database metadata
+- **Read-only inspector**: Explore discovered schemas, fields, indexes, table rows, and SELECT results without opening the source for writes
 - **Replication status**: Live indicators for replication state per database
 - **Schema timeline**: Version history viewer with schema transition diffs
 - **Snapshot restore**: One-click restore from any available snapshot
+
+Field edits rebuild the table in one transaction while preserving column order, data, indexes, and triggers. The editor rejects schemas with constraints it cannot safely reconstruct instead of silently dropping them.
 
 ## Database Discovery & Replication
 
 ### Scanning
 
-The scanner walks `$HOME` (configurable via `scan_root`) looking for SQLite files. Each candidate is validated by checking the first 16 bytes for the SQLite magic header (`SQLite format 3\000`). Discovered databases are recorded in an internal catalog (`catalog.sqlite`) with metadata like path, size, modification time, and priority tier.
+The scanner walks `$HOME` (configurable via `scan_root`) looking for SQLite files. Each candidate is validated by checking the first 16 bytes for the SQLite magic header (`SQLite format 3\000`). Discovered databases are recorded in an internal catalog (`catalog.sqlite`) with metadata like path, size, modification time, priority tier, favorite state, and availability.
 
-Scanning runs on a configurable interval (`scan_interval`) and can also be triggered on-demand via `sqnsl scan` or `POST /api/scan`.
+Scanning runs every 30 minutes by default. Set `scanner.scan_interval` in `~/.sql-not-so-lite/config.toml` to any Go duration such as `"15m"` or `"2h"`. Scans can also be triggered on-demand via `sqnsl scan` or `POST /api/scan`. Repeat scans update changed metadata, confirm existing paths, and mark missing files without deleting their catalog history or favorites.
 
 ### Priority tiers
 
@@ -241,10 +251,11 @@ For each discovered database, the scanner walks up the directory tree looking fo
 Replication creates and maintains a copy of a discovered database under `replica_dir`:
 
 1. **Initial sync**: Uses `VACUUM INTO` to create a consistent baseline copy of the source database.
-2. **Incremental sync**: On each `sync_interval` tick, the replicator checks the source WAL for new frames. If changes are detected, a new snapshot is taken and the replica is updated.
-3. **Snapshots**: Each sync creates a timestamped snapshot in `snapshot_dir`. Old snapshots are pruned based on `snapshot_retention`.
+2. **Differential sync**: On each `sync_interval` tick, the replicator compares table schemas and rows, then transactionally replaces only changed tables and removes tables deleted from the source.
+3. **Automatic resume**: Databases left in the replicating state resume when the daemon starts again. Paused or failed replicas can be resumed without recreating version-one metadata.
+4. **Snapshots**: Initial baselines and explicit rebuilds are versioned in `snapshot_dir`. Old snapshots can be pruned based on `snapshot_retention`.
 
-WAL-aware change detection avoids unnecessary copies when a database hasn't changed.
+Replica writes are serialized per database, and each differential cycle reads the source through one consistent read transaction.
 
 ### Schema versioning
 

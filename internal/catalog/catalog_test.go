@@ -2,9 +2,12 @@ package catalog
 
 import (
 	"database/sql"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	_ "modernc.org/sqlite"
 )
 
 func openTestCatalog(t *testing.T) *Catalog {
@@ -46,6 +49,58 @@ func TestOpenClose(t *testing.T) {
 		t.Fatalf("Reopen: %v", err)
 	}
 	cat2.Close()
+}
+
+func TestOpenMigratesDiscoveryPreferences(t *testing.T) {
+	dir := t.TempDir()
+	db, err := sql.Open("sqlite", filepath.Join(dir, "catalog.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.Exec(`
+		CREATE TABLE discovered_databases (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			name TEXT NOT NULL UNIQUE,
+			source_path TEXT NOT NULL UNIQUE,
+			sqlite_version TEXT,
+			page_size INTEGER,
+			journal_mode TEXT,
+			size_bytes INTEGER DEFAULT 0,
+			last_modified TEXT,
+			first_seen TEXT NOT NULL DEFAULT (datetime('now')),
+			last_scanned TEXT NOT NULL DEFAULT (datetime('now')),
+			status TEXT NOT NULL DEFAULT 'discovered',
+			error_message TEXT,
+			github_repo TEXT,
+			github_url TEXT,
+			priority TEXT DEFAULT 'other'
+		);
+		INSERT INTO discovered_databases (name, source_path) VALUES ('legacy', '/legacy.sqlite')
+	`)
+	if err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	cat, err := Open(dir)
+	if err != nil {
+		t.Fatalf("Open migrated catalog: %v", err)
+	}
+	defer cat.Close()
+
+	got, err := cat.GetDiscoveredByPath("/legacy.sqlite")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Favorite {
+		t.Fatal("legacy database unexpectedly favorited")
+	}
+	if !got.Available {
+		t.Fatal("legacy database should default to available")
+	}
 }
 
 func TestUpsertAndGetDiscovered(t *testing.T) {
@@ -132,6 +187,36 @@ func TestUpsertDiscoveredUpdate(t *testing.T) {
 	got, _ := cat.GetDiscovered(id1)
 	if got.SizeBytes != 200 {
 		t.Errorf("SizeBytes = %d after upsert, want 200", got.SizeBytes)
+	}
+}
+
+func TestUpsertDiscoveredPreservesFavoriteAndRestoresAvailability(t *testing.T) {
+	cat := openTestCatalog(t)
+	id := insertTestDB(t, cat, "db1", "/a/b.db")
+	if err := cat.UpdateFavorite(id, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := cat.UpdateAvailability(id, false); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := cat.UpsertDiscovered(&DiscoveredDB{
+		Name:       "db1",
+		SourcePath: "/a/b.db",
+		SizeBytes:  200,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := cat.GetDiscovered(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Favorite {
+		t.Fatal("favorite was not preserved")
+	}
+	if !got.Available {
+		t.Fatal("upsert did not restore availability")
 	}
 }
 
@@ -667,6 +752,54 @@ func TestPriorityOrdering(t *testing.T) {
 		if list[i].Name != want {
 			t.Errorf("list[%d].Name = %q, want %q", i, list[i].Name, want)
 		}
+	}
+}
+
+func TestFavoritesAndAvailableDatabasesSortFirst(t *testing.T) {
+	cat := openTestCatalog(t)
+	ordinaryID := insertTestDB(t, cat, "ordinary", "/ordinary.db")
+	missingFavoriteID := insertTestDB(t, cat, "missing-favorite", "/missing-favorite.db")
+	favoriteID := insertTestDB(t, cat, "favorite", "/favorite.db")
+	if err := cat.UpdateFavorite(missingFavoriteID, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := cat.UpdateAvailability(missingFavoriteID, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := cat.UpdateFavorite(favoriteID, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := cat.UpdateAvailability(ordinaryID, true); err != nil {
+		t.Fatal(err)
+	}
+
+	list, err := cat.ListDiscovered()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := []string{list[0].Name, list[1].Name, list[2].Name}
+	want := []string{"favorite", "missing-favorite", "ordinary"}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("order = %v, want %v", got, want)
+		}
+	}
+}
+
+func TestListDiscoveredByStatus(t *testing.T) {
+	cat := openTestCatalog(t)
+	firstID := insertTestDB(t, cat, "first", "/first.db")
+	insertTestDB(t, cat, "second", "/second.db")
+	if err := cat.UpdateStatus(firstID, "replicating", ""); err != nil {
+		t.Fatal(err)
+	}
+
+	list, err := cat.ListDiscoveredByStatus("replicating")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 1 || list[0].ID != firstID {
+		t.Fatalf("replicating databases = %+v", list)
 	}
 }
 

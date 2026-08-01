@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -15,6 +16,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/mbianchidev/sql-not-so-lite/internal/catalog"
@@ -29,21 +31,51 @@ import (
 var staticFiles embed.FS
 
 type HTTPServer struct {
-	svc       *service.DatabaseService
-	server    *http.Server
-	port      int
-	startTime time.Time
-	catalog   *catalog.Catalog
-	cfg       *config.Config
+	svc            *service.DatabaseService
+	server         *http.Server
+	port           int
+	startTime      time.Time
+	catalog        *catalog.Catalog
+	cfg            *config.Config
+	scanMu         sync.Mutex
+	scanStatusMu   sync.RWMutex
+	scanInProgress bool
+	scanCtx        context.Context
+	scanCancel     context.CancelFunc
+}
+
+var (
+	ErrScanInProgress  = errors.New("scan already in progress")
+	ErrInvalidScanPath = errors.New("invalid scan path")
+)
+
+const discoveredQueryTimeout = 10 * time.Second
+
+type ScanFileResult struct {
+	ID            int64  `json:"id"`
+	Name          string `json:"name"`
+	SourcePath    string `json:"source_path"`
+	SizeBytes     int64  `json:"size_bytes"`
+	SQLiteVersion string `json:"sqlite_version"`
+	Priority      string `json:"priority"`
+	GitHubRepo    string `json:"github_repo"`
+}
+
+type ScanResult struct {
+	Scanned int              `json:"scanned"`
+	Files   []ScanFileResult `json:"files"`
 }
 
 func NewHTTPServer(svc *service.DatabaseService, port int, cat *catalog.Catalog, cfg *config.Config) *HTTPServer {
+	scanCtx, scanCancel := context.WithCancel(context.Background())
 	return &HTTPServer{
-		svc:       svc,
-		port:      port,
-		startTime: time.Now(),
-		catalog:   cat,
-		cfg:       cfg,
+		svc:        svc,
+		port:       port,
+		startTime:  time.Now(),
+		catalog:    cat,
+		cfg:        cfg,
+		scanCtx:    scanCtx,
+		scanCancel: scanCancel,
 	}
 }
 
@@ -81,6 +113,11 @@ func (s *HTTPServer) Start() error {
 }
 
 func (s *HTTPServer) Stop(ctx context.Context) error {
+	if s.scanCancel != nil {
+		s.scanCancel()
+		s.scanMu.Lock()
+		s.scanMu.Unlock()
+	}
 	if s.server != nil {
 		return s.server.Shutdown(ctx)
 	}
@@ -107,7 +144,7 @@ func spaHandler(fileServer http.Handler, staticFS fs.FS) http.Handler {
 func (s *HTTPServer) corsMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
 
 		if r.Method == http.MethodOptions {
@@ -159,7 +196,7 @@ func (s *HTTPServer) handleDatabases(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *HTTPServer) handleDatabase(w http.ResponseWriter, r *http.Request) {
-	// Parse path: /api/databases/{name}[/schema|/tables[/{table}[/columns]]|/query]
+	// Parse path: /api/databases/{name}[/schema|/tables[/{table}[/columns|/rows]]|/query]
 	path := strings.TrimPrefix(r.URL.Path, "/api/databases/")
 	parts := strings.SplitN(path, "/", 4)
 	dbName := parts[0]
@@ -183,11 +220,14 @@ func (s *HTTPServer) handleDatabase(w http.ResponseWriter, r *http.Request) {
 			tableName = parts[2]
 		}
 		if len(parts) == 4 {
-			if parts[3] != "columns" {
+			switch parts[3] {
+			case "columns":
+				s.handleColumns(w, r, dbName, tableName)
+			case "rows":
+				s.handleRows(w, r, dbName, tableName)
+			default:
 				writeError(w, http.StatusNotFound, "not found")
-				return
 			}
-			s.handleColumns(w, r, dbName, tableName)
 			return
 		}
 		s.handleTables(w, r, dbName, tableName)
@@ -300,6 +340,43 @@ func (s *HTTPServer) handleTables(w http.ResponseWriter, r *http.Request, dbName
 }
 
 func (s *HTTPServer) handleColumns(w http.ResponseWriter, r *http.Request, dbName, tableName string) {
+	if tableName == "" {
+		writeError(w, http.StatusBadRequest, "table name required")
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, 64*1024)
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	switch r.Method {
+	case http.MethodPost:
+		var column service.ColumnDefinition
+		if err := decoder.Decode(&column); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid request body")
+			return
+		}
+		if err := s.svc.AddColumn(r.Context(), dbName, tableName, column); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusCreated, map[string]bool{"success": true})
+	case http.MethodPut:
+		var req service.EditColumnRequest
+		if err := decoder.Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid request body")
+			return
+		}
+		if err := s.svc.EditColumn(r.Context(), dbName, tableName, req); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]bool{"success": true})
+	default:
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+	}
+}
+
+func (s *HTTPServer) handleRows(w http.ResponseWriter, r *http.Request, dbName, tableName string) {
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
@@ -309,16 +386,20 @@ func (s *HTTPServer) handleColumns(w http.ResponseWriter, r *http.Request, dbNam
 		return
 	}
 
-	var column service.ColumnDefinition
-	if err := json.NewDecoder(r.Body).Decode(&column); err != nil {
+	var req service.InsertRowRequest
+	r.Body = http.MaxBytesReader(w, r.Body, 1024*1024)
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	if err := s.svc.AddColumn(r.Context(), dbName, tableName, column); err != nil {
+	result, err := s.svc.InsertRow(r.Context(), dbName, tableName, req)
+	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusCreated, map[string]bool{"success": true})
+	writeJSON(w, http.StatusCreated, result)
 }
 
 func (s *HTTPServer) registerCreatedDatabase(info *service.DBInfo) error {
@@ -436,6 +517,13 @@ func (s *HTTPServer) handleStats(w http.ResponseWriter, r *http.Request) {
 // --------------- Discovery / Replication handlers ---------------
 
 func (s *HTTPServer) handleScan(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodGet {
+		s.scanStatusMu.RLock()
+		inProgress := s.scanInProgress
+		s.scanStatusMu.RUnlock()
+		writeJSON(w, http.StatusOK, map[string]bool{"in_progress": inProgress})
+		return
+	}
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
@@ -452,7 +540,55 @@ func (s *HTTPServer) handleScan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	roots := req.Paths
+	result, err := s.Scan(r.Context(), req.Paths)
+	if err != nil {
+		switch {
+		case errors.Is(err, ErrScanInProgress):
+			writeError(w, http.StatusConflict, err.Error())
+		case errors.Is(err, ErrInvalidScanPath):
+			writeError(w, http.StatusBadRequest, err.Error())
+		case errors.Is(err, context.Canceled):
+			writeError(w, http.StatusRequestTimeout, "scan cancelled")
+		default:
+			writeError(w, http.StatusInternalServerError, err.Error())
+		}
+		return
+	}
+
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (s *HTTPServer) Scan(ctx context.Context, requestedRoots []string) (*ScanResult, error) {
+	if !s.scanMu.TryLock() {
+		return nil, ErrScanInProgress
+	}
+	defer s.scanMu.Unlock()
+	s.scanStatusMu.Lock()
+	s.scanInProgress = true
+	s.scanStatusMu.Unlock()
+	defer func() {
+		s.scanStatusMu.Lock()
+		s.scanInProgress = false
+		s.scanStatusMu.Unlock()
+	}()
+
+	if s.scanCtx != nil {
+		if err := s.scanCtx.Err(); err != nil {
+			return nil, err
+		}
+		scanCtx, cancel := context.WithCancel(ctx)
+		stopCancel := context.AfterFunc(s.scanCtx, cancel)
+		defer func() {
+			stopCancel()
+			cancel()
+		}()
+		ctx = scanCtx
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	roots := requestedRoots
 	if len(roots) == 0 {
 		roots = []string{s.cfg.Scanner.ScanRoot}
 	}
@@ -460,16 +596,17 @@ func (s *HTTPServer) handleScan(w http.ResponseWriter, r *http.Request) {
 	files := make([]scanner.DiscoveredFile, 0)
 	seenRoots := make(map[string]struct{}, len(roots))
 	seenFiles := make(map[string]struct{})
+	resolvedRoots := make([]string, 0, len(roots))
 	for _, requestedRoot := range roots {
 		root, err := resolveScanPath(requestedRoot, s.cfg.Scanner.ScanRoot)
 		if err != nil {
-			writeError(w, http.StatusBadRequest, err.Error())
-			return
+			return nil, fmt.Errorf("%w: %v", ErrInvalidScanPath, err)
 		}
 		if _, seen := seenRoots[root]; seen {
 			continue
 		}
 		seenRoots[root] = struct{}{}
+		resolvedRoots = append(resolvedRoots, root)
 
 		scanCfg := s.cfg.Scanner
 		scanCfg.ScanRoot = root
@@ -477,10 +614,9 @@ func (s *HTTPServer) handleScan(w http.ResponseWriter, r *http.Request) {
 			scanCfg,
 			s.cfg.Server.DataDir,
 			s.cfg.Replicator.SnapshotDir,
-		).Scan()
+		).ScanContext(ctx)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, fmt.Sprintf("scan failed for %s: %v", root, err))
-			return
+			return nil, fmt.Errorf("scan failed for %s: %w", root, err)
 		}
 		for _, file := range rootFiles {
 			if _, seen := seenFiles[file.Path]; seen {
@@ -491,8 +627,12 @@ func (s *HTTPServer) handleScan(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	results := make([]map[string]interface{}, 0, len(files))
+	results := make([]ScanFileResult, 0, len(files))
 	for _, f := range files {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+
 		// Check if this DB already exists to preserve its status
 		existing, _ := s.catalog.GetDiscoveredByPath(f.Path)
 		status := "discovered"
@@ -513,26 +653,78 @@ func (s *HTTPServer) handleScan(w http.ResponseWriter, r *http.Request) {
 			Priority:      f.Priority,
 			Status:        status,
 		}
-		id, err := s.catalog.UpsertDiscovered(d)
+		var id int64
+		var err error
+		if existing != nil && discoveredMetadataMatches(existing, &f) {
+			id = existing.ID
+			d.Name = existing.Name
+			err = s.catalog.UpdateAvailability(id, true)
+		} else {
+			id, err = s.catalog.UpsertDiscovered(d)
+		}
 		if err != nil {
-			log.Printf("scan: failed to upsert %s: %v", f.Path, err)
+			log.Printf("scan: failed to update %s: %v", f.Path, err)
 			continue
 		}
-		results = append(results, map[string]interface{}{
-			"id":             id,
-			"name":           d.Name,
-			"source_path":    f.Path,
-			"size_bytes":     f.SizeBytes,
-			"sqlite_version": f.SQLiteVersion,
-			"priority":       f.Priority,
-			"github_repo":    f.GitHubRepo,
+		results = append(results, ScanFileResult{
+			ID:            id,
+			Name:          d.Name,
+			SourcePath:    f.Path,
+			SizeBytes:     f.SizeBytes,
+			SQLiteVersion: f.SQLiteVersion,
+			Priority:      f.Priority,
+			GitHubRepo:    f.GitHubRepo,
 		})
 	}
 
-	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"scanned": len(results),
-		"files":   results,
-	})
+	discovered, err := s.catalog.ListDiscovered()
+	if err != nil {
+		return nil, fmt.Errorf("list discovered databases: %w", err)
+	}
+	for i := range discovered {
+		db := &discovered[i]
+		if !pathWithinAnyRoot(db.SourcePath, resolvedRoots) {
+			continue
+		}
+		_, statErr := os.Stat(db.SourcePath)
+		switch {
+		case statErr == nil:
+			if err := s.catalog.UpdateAvailability(db.ID, true); err != nil {
+				log.Printf("scan: failed to confirm %s: %v", db.SourcePath, err)
+			}
+		case errors.Is(statErr, os.ErrNotExist):
+			if err := s.catalog.UpdateAvailability(db.ID, false); err != nil {
+				log.Printf("scan: failed to mark missing %s: %v", db.SourcePath, err)
+			}
+		default:
+			log.Printf("scan: failed to check %s: %v", db.SourcePath, statErr)
+		}
+	}
+
+	return &ScanResult{Scanned: len(results), Files: results}, nil
+}
+
+func discoveredMetadataMatches(existing *catalog.DiscoveredDB, file *scanner.DiscoveredFile) bool {
+	return existing.SizeBytes == file.SizeBytes &&
+		existing.LastModified.Format(time.RFC3339) == file.LastModified.Format(time.RFC3339) &&
+		existing.SQLiteVersion == file.SQLiteVersion &&
+		existing.PageSize == file.PageSize &&
+		existing.JournalMode == file.JournalMode &&
+		existing.GitHubRepo == file.GitHubRepo &&
+		existing.GitHubURL == file.GitHubURL &&
+		existing.Priority == file.Priority
+}
+
+func pathWithinAnyRoot(path string, roots []string) bool {
+	cleanPath := filepath.Clean(path)
+	for _, root := range roots {
+		cleanRoot := filepath.Clean(root)
+		if cleanPath == cleanRoot ||
+			strings.HasPrefix(cleanPath, cleanRoot+string(filepath.Separator)) {
+			return true
+		}
+	}
+	return false
 }
 
 func resolveScanPath(path, configuredRoot string) (string, error) {
@@ -607,7 +799,12 @@ func (s *HTTPServer) handleDiscoveredItem(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	switch parts[1] {
+	resourceParts := strings.SplitN(parts[1], "/", 2)
+	if len(resourceParts) > 1 && resourceParts[1] != "" {
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
+	switch resourceParts[0] {
 	case "replicate":
 		s.handleReplicate(w, r, id)
 	case "restore":
@@ -618,9 +815,296 @@ func (s *HTTPServer) handleDiscoveredItem(w http.ResponseWriter, r *http.Request
 		s.handleSchemaVersions(w, r, id)
 	case "transitions":
 		s.handleSchemaTransitions(w, r, id)
+	case "schema":
+		s.handleDiscoveredSchema(w, r, id)
+	case "table":
+		s.handleDiscoveredTable(w, r, id)
+	case "query":
+		s.handleDiscoveredQuery(w, r, id)
 	default:
 		writeError(w, http.StatusNotFound, "not found")
 	}
+}
+
+func (s *HTTPServer) openDiscoveredReadOnly(id int64) (*catalog.DiscoveredDB, *sql.DB, error) {
+	discovered, err := s.catalog.GetDiscovered(id)
+	if err != nil {
+		return nil, nil, err
+	}
+	info, err := os.Stat(discovered.SourcePath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			_ = s.catalog.UpdateAvailability(id, false)
+			return nil, nil, fmt.Errorf("database file is no longer available")
+		}
+		return nil, nil, fmt.Errorf("check database file: %w", err)
+	}
+	if info.IsDir() {
+		return nil, nil, fmt.Errorf("database path is a directory")
+	}
+	db, err := replicator.OpenReadOnly(discovered.SourcePath)
+	if err != nil {
+		return nil, nil, fmt.Errorf("open database read-only: %w", err)
+	}
+	return discovered, db, nil
+}
+
+func writeDiscoveredOpenError(w http.ResponseWriter, err error) {
+	if errors.Is(err, sql.ErrNoRows) {
+		writeError(w, http.StatusNotFound, "database not found")
+		return
+	}
+	writeError(w, http.StatusConflict, err.Error())
+}
+
+func (s *HTTPServer) handleDiscoveredSchema(w http.ResponseWriter, r *http.Request, id int64) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	_, db, err := s.openDiscoveredReadOnly(id)
+	if err != nil {
+		writeDiscoveredOpenError(w, err)
+		return
+	}
+	defer db.Close()
+
+	ctx, cancel := context.WithTimeout(r.Context(), discoveredQueryTimeout)
+	defer cancel()
+	tables, err := service.GetDatabaseSchema(ctx, db)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, tables)
+}
+
+func (s *HTTPServer) handleDiscoveredTable(w http.ResponseWriter, r *http.Request, id int64) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	tableName := r.URL.Query().Get("name")
+	if tableName == "" {
+		writeError(w, http.StatusBadRequest, "table name required")
+		return
+	}
+	limit := boundedQueryInt(r.URL.Query().Get("limit"), 100, 1, 500)
+	offset := boundedQueryInt(r.URL.Query().Get("offset"), 0, 0, 1_000_000_000)
+
+	_, db, err := s.openDiscoveredReadOnly(id)
+	if err != nil {
+		writeDiscoveredOpenError(w, err)
+		return
+	}
+	defer db.Close()
+
+	ctx, cancel := context.WithTimeout(r.Context(), discoveredQueryTimeout)
+	defer cancel()
+	var exists int
+	if err := db.QueryRowContext(
+		ctx,
+		"SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+		tableName,
+	).Scan(&exists); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "table not found")
+			return
+		}
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("check table: %v", err))
+		return
+	}
+
+	statement := fmt.Sprintf(
+		"SELECT * FROM %s LIMIT %d OFFSET %d",
+		quoteSQLiteIdentifier(tableName),
+		limit,
+		offset,
+	)
+	result, err := service.QueryDatabase(ctx, db, statement, nil, limit, 0)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (s *HTTPServer) handleDiscoveredQuery(w http.ResponseWriter, r *http.Request, id int64) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var req struct {
+		SQL    string   `json:"sql"`
+		Params []string `json:"params,omitempty"`
+		Limit  int      `json:"limit,omitempty"`
+		Offset int      `json:"offset,omitempty"`
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1024*1024)
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid query request: %v", err))
+		return
+	}
+	if err := validateReadOnlyQuery(req.SQL); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	req.Limit = boundedInt(req.Limit, 1000, 1, 1000)
+	req.Offset = boundedInt(req.Offset, 0, 0, 1_000_000_000)
+
+	_, db, err := s.openDiscoveredReadOnly(id)
+	if err != nil {
+		writeDiscoveredOpenError(w, err)
+		return
+	}
+	defer db.Close()
+
+	ctx, cancel := context.WithTimeout(r.Context(), discoveredQueryTimeout)
+	defer cancel()
+	result, err := service.QueryDatabase(ctx, db, req.SQL, req.Params, req.Limit, req.Offset)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func boundedQueryInt(value string, fallback, minimum, maximum int) int {
+	if value == "" {
+		return fallback
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil {
+		return fallback
+	}
+	return boundedInt(parsed, fallback, minimum, maximum)
+}
+
+func boundedInt(value, fallback, minimum, maximum int) int {
+	if value == 0 {
+		return fallback
+	}
+	if value < minimum {
+		return minimum
+	}
+	if value > maximum {
+		return maximum
+	}
+	return value
+}
+
+func quoteSQLiteIdentifier(identifier string) string {
+	return `"` + strings.ReplaceAll(identifier, `"`, `""`) + `"`
+}
+
+func validateReadOnlyQuery(statement string) error {
+	trimmed, err := trimLeadingSQLTrivia(statement)
+	if err != nil {
+		return err
+	}
+	if trimmed == "" {
+		return fmt.Errorf("query is required")
+	}
+	if terminator := sqlStatementTerminator(trimmed); terminator >= 0 {
+		trailing, err := trimLeadingSQLTrivia(trimmed[terminator+1:])
+		if err != nil {
+			return err
+		}
+		if trailing != "" {
+			return fmt.Errorf("only one SELECT statement is allowed")
+		}
+		trimmed = strings.TrimSpace(trimmed[:terminator])
+	}
+	fields := strings.Fields(trimmed)
+	if len(fields) == 0 {
+		return fmt.Errorf("query is required")
+	}
+	switch strings.ToUpper(fields[0]) {
+	case "SELECT", "WITH":
+		return nil
+	default:
+		return fmt.Errorf("only SELECT queries are allowed")
+	}
+}
+
+func trimLeadingSQLTrivia(statement string) (string, error) {
+	remaining := strings.TrimSpace(statement)
+	for {
+		switch {
+		case strings.HasPrefix(remaining, "--"):
+			if newline := strings.IndexByte(remaining, '\n'); newline >= 0 {
+				remaining = strings.TrimSpace(remaining[newline+1:])
+				continue
+			}
+			return "", nil
+		case strings.HasPrefix(remaining, "/*"):
+			end := strings.Index(remaining[2:], "*/")
+			if end < 0 {
+				return "", fmt.Errorf("unterminated SQL comment")
+			}
+			remaining = strings.TrimSpace(remaining[end+4:])
+			continue
+		default:
+			return remaining, nil
+		}
+	}
+}
+
+func sqlStatementTerminator(statement string) int {
+	var quote byte
+	lineComment := false
+	blockComment := false
+	for i := 0; i < len(statement); i++ {
+		current := statement[i]
+		next := byte(0)
+		if i+1 < len(statement) {
+			next = statement[i+1]
+		}
+		if lineComment {
+			if current == '\n' {
+				lineComment = false
+			}
+			continue
+		}
+		if blockComment {
+			if current == '*' && next == '/' {
+				blockComment = false
+				i++
+			}
+			continue
+		}
+		if quote != 0 {
+			if quote == '[' {
+				if current == ']' {
+					quote = 0
+				}
+				continue
+			}
+			if current == quote {
+				if next == quote {
+					i++
+				} else {
+					quote = 0
+				}
+			}
+			continue
+		}
+		switch {
+		case current == '-' && next == '-':
+			lineComment = true
+			i++
+		case current == '/' && next == '*':
+			blockComment = true
+			i++
+		case current == '\'', current == '"', current == '`', current == '[':
+			quote = current
+		case current == ';':
+			return i
+		}
+	}
+	return -1
 }
 
 func (s *HTTPServer) handleDiscoveredGet(w http.ResponseWriter, r *http.Request, id int64) {
@@ -656,6 +1140,34 @@ func (s *HTTPServer) handleDiscoveredGet(w http.ResponseWriter, r *http.Request,
 		}
 		writeJSON(w, http.StatusOK, map[string]bool{"success": true})
 
+	case http.MethodPatch:
+		var req struct {
+			Favorite *bool `json:"favorite"`
+		}
+		r.Body = http.MaxBytesReader(w, r.Body, 64*1024)
+		decoder := json.NewDecoder(r.Body)
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid request body: %v", err))
+			return
+		}
+		if req.Favorite == nil {
+			writeError(w, http.StatusBadRequest, "favorite is required")
+			return
+		}
+		if err := s.catalog.UpdateFavorite(id, *req.Favorite); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				writeError(w, http.StatusNotFound, "database not found")
+				return
+			}
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]bool{
+			"success":  true,
+			"favorite": *req.Favorite,
+		})
+
 	default:
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 	}
@@ -684,6 +1196,44 @@ func (s *HTTPServer) handleStartReplication(w http.ResponseWriter, _ *http.Reque
 	}
 
 	replicaPath := filepath.Join(s.cfg.Replicator.ReplicaDir, d.Name+".sqlite")
+	state, stateErr := s.catalog.GetReplicationState(id)
+	switch {
+	case stateErr == nil:
+		if _, err := os.Stat(replicaPath); err == nil {
+			changedTables, err := replicator.DifferentialSync(d.SourcePath, replicaPath)
+			if err != nil {
+				if statusErr := s.catalog.UpdateStatus(id, "error", err.Error()); statusErr != nil {
+					log.Printf("replication: failed to record resume error for %d: %v", id, statusErr)
+				}
+				writeError(w, http.StatusInternalServerError, fmt.Sprintf("resume sync failed: %v", err))
+				return
+			}
+			state.LastSync = time.Now()
+			state.SyncMode = "differential"
+			if err := s.catalog.SetReplicationState(state); err != nil {
+				writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to update replication state: %v", err))
+				return
+			}
+			if err := s.catalog.UpdateStatus(id, "replicating", ""); err != nil {
+				writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to update status: %v", err))
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]interface{}{
+				"status":         "replicating",
+				"replica_path":   replicaPath,
+				"sync_mode":      "differential",
+				"changed_tables": changedTables,
+			})
+			return
+		} else if !errors.Is(err, os.ErrNotExist) {
+			writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to inspect replica: %v", err))
+			return
+		}
+	case errors.Is(stateErr, sql.ErrNoRows):
+	default:
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to load replication state: %v", stateErr))
+		return
+	}
 
 	// Create snapshot directory for this DB
 	snapshotDir := filepath.Join(s.cfg.Replicator.SnapshotDir, d.Name)
@@ -699,8 +1249,14 @@ func (s *HTTPServer) handleStartReplication(w http.ResponseWriter, _ *http.Reque
 		return
 	}
 
+	snapshotVersion, err := s.catalog.NextSnapshotVersion(id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to choose snapshot version: %v", err))
+		return
+	}
+
 	// Create a snapshot from the replica for consistency
-	snapshotPath := filepath.Join(snapshotDir, "v1.sqlite")
+	snapshotPath := filepath.Join(snapshotDir, fmt.Sprintf("v%d.sqlite", snapshotVersion))
 	snapshotSize, err := replicator.CreateSnapshot(replicaPath, snapshotPath)
 	if err != nil {
 		// Clean up replica on failure
@@ -725,26 +1281,49 @@ func (s *HTTPServer) handleStartReplication(w http.ResponseWriter, _ *http.Reque
 	normalizedSchema := schema.NormalizeSchema(schemaSQL)
 	schemaHash := schema.HashSchema(normalizedSchema)
 
-	// Store schema version 0
-	_, err = s.catalog.InsertSchemaVersion(&catalog.SchemaVersion{
-		DatabaseID: id,
-		Version:    0,
-		SchemaSQL:  schemaSQL,
-		SchemaHash: schemaHash,
-	})
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to store schema: %v", err))
+	schemaVersion := 0
+	latestSchema, err := s.catalog.LatestSchemaVersion(id)
+	switch {
+	case err == nil:
+		schemaVersion = latestSchema.Version
+		if latestSchema.SchemaHash != schemaHash {
+			schemaVersion++
+			if _, err := s.catalog.InsertSchemaVersion(&catalog.SchemaVersion{
+				DatabaseID: id,
+				Version:    schemaVersion,
+				SchemaSQL:  schemaSQL,
+				SchemaHash: schemaHash,
+			}); err != nil {
+				writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to store schema: %v", err))
+				return
+			}
+		}
+	case errors.Is(err, sql.ErrNoRows):
+		if _, err := s.catalog.InsertSchemaVersion(&catalog.SchemaVersion{
+			DatabaseID: id,
+			Version:    schemaVersion,
+			SchemaSQL:  schemaSQL,
+			SchemaHash: schemaHash,
+		}); err != nil {
+			writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to store schema: %v", err))
+			return
+		}
+	default:
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to load schema history: %v", err))
 		return
 	}
 
-	// Record initial snapshot
+	trigger := "manual"
+	if snapshotVersion == 1 {
+		trigger = "initial"
+	}
 	snapID, err := s.catalog.InsertSnapshot(&catalog.Snapshot{
 		DatabaseID:    id,
-		Version:       1,
-		SchemaVersion: 0,
+		Version:       snapshotVersion,
+		SchemaVersion: schemaVersion,
 		SnapshotPath:  snapshotPath,
 		SizeBytes:     snapshotSize,
-		Trigger:       "initial",
+		Trigger:       trigger,
 	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to record snapshot: %v", err))
@@ -956,6 +1535,8 @@ func discoveredToJSON(d *catalog.DiscoveredDB, replicaDir string) map[string]int
 		"github_repo":    d.GitHubRepo,
 		"github_url":     d.GitHubURL,
 		"error_message":  d.ErrorMessage,
+		"favorite":       d.Favorite,
+		"available":      d.Available,
 		"is_replica":     replicator.IsManagedReplica(d.SourcePath, replicaDir),
 	}
 }

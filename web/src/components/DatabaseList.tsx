@@ -56,6 +56,21 @@ export function DatabaseList({
 
   return (
     <div className="sidebar">
+      <nav className="sidebar-menu" aria-label="Global navigation">
+        <button
+          type="button"
+          className={`sidebar-menu-item ${discoveryActive ? 'active' : ''}`}
+          onClick={onOpenDiscovery}
+          aria-current={discoveryActive ? 'page' : undefined}
+        >
+          <span className="sidebar-menu-icon" aria-hidden="true">⌕</span>
+          <span>
+            <strong>Discovery</strong>
+            <small>Scan and search databases</small>
+          </span>
+        </button>
+      </nav>
+
       <div className="sidebar-header">
         <h2>Databases</h2>
         <button onClick={onRefresh} className="btn-icon" title="Refresh">⟳</button>
@@ -105,21 +120,6 @@ export function DatabaseList({
           <li className="db-item empty">No databases yet</li>
         )}
       </ul>
-
-      <nav className="sidebar-menu" aria-label="Global navigation">
-        <button
-          type="button"
-          className={`sidebar-menu-item ${discoveryActive ? 'active' : ''}`}
-          onClick={onOpenDiscovery}
-          aria-current={discoveryActive ? 'page' : undefined}
-        >
-          <span className="sidebar-menu-icon" aria-hidden="true">⌕</span>
-          <span>
-            <strong>Discovery</strong>
-            <small>Scan and search databases</small>
-          </span>
-        </button>
-      </nav>
     </div>
   );
 }

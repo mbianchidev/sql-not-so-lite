@@ -53,6 +53,14 @@ export interface ColumnDefinition {
   DefaultValue?: string;
 }
 
+export interface EditColumnRequest {
+  OriginalName: string;
+  Name: string;
+  Type: string;
+  Nullable: boolean;
+  DefaultValue: string | null;
+}
+
 export interface StatsInfo {
   version: string;
   uptime_seconds: number;
@@ -77,6 +85,8 @@ export interface DiscoveredDB {
   GitHubURL: string;
   Priority: string;
   IsReplica: boolean;
+  Favorite: boolean;
+  Available: boolean;
 }
 
 export interface SnapshotInfo {
@@ -118,6 +128,8 @@ interface RawDiscoveredDB {
   github_url: string;
   priority: string;
   is_replica: boolean;
+  favorite: boolean;
+  available: boolean;
 }
 
 interface RawSnapshotInfo {
@@ -159,6 +171,10 @@ export interface ScanResult {
   files: ScanFile[];
 }
 
+export interface ScanStatus {
+  in_progress: boolean;
+}
+
 function toDiscoveredDB(db: RawDiscoveredDB): DiscoveredDB {
   return {
     ID: db.id,
@@ -175,6 +191,8 @@ function toDiscoveredDB(db: RawDiscoveredDB): DiscoveredDB {
     GitHubURL: db.github_url,
     Priority: db.priority,
     IsReplica: db.is_replica,
+    Favorite: db.favorite,
+    Available: db.available,
   };
 }
 
@@ -255,9 +273,27 @@ export const api = {
       },
     ),
 
+  editColumn: (dbName: string, table: string, column: EditColumnRequest) =>
+    request<{ success: boolean }>(
+      `/api/databases/${encodeURIComponent(dbName)}/tables/${encodeURIComponent(table)}/columns`,
+      {
+        method: 'PUT',
+        body: JSON.stringify(column),
+      },
+    ),
+
   getTableData: (dbName: string, table: string, limit = 100, offset = 0) =>
     request<QueryResult>(
-      `/api/databases/${dbName}/tables/${table}?limit=${limit}&offset=${offset}`
+      `/api/databases/${encodeURIComponent(dbName)}/tables/${encodeURIComponent(table)}?limit=${limit}&offset=${offset}`
+    ),
+
+  insertRow: (dbName: string, table: string, columns: string[], values: Array<string | null>) =>
+    request<ExecResult>(
+      `/api/databases/${encodeURIComponent(dbName)}/tables/${encodeURIComponent(table)}/rows`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ Columns: columns, Values: values }),
+      },
     ),
 
   executeQuery: (dbName: string, sql: string, params?: string[]) =>
@@ -275,12 +311,29 @@ export const api = {
       method: 'POST',
       body: paths ? JSON.stringify({ paths }) : undefined,
     }),
+  getScanStatus: () => request<ScanStatus>('/api/scan'),
   listDiscovered: async () =>
     (await request<RawDiscoveredDB[]>('/api/discovered')).map(toDiscoveredDB),
+  getDiscoveredSchema: (id: number) =>
+    request<TableInfo[]>(`/api/discovered/${id}/schema`),
+  getDiscoveredTable: (id: number, table: string, limit = 100, offset = 0) =>
+    request<QueryResult>(
+      `/api/discovered/${id}/table?name=${encodeURIComponent(table)}&limit=${limit}&offset=${offset}`,
+    ),
+  queryDiscovered: (id: number, sql: string, params?: string[]) =>
+    request<QueryResult>(`/api/discovered/${id}/query`, {
+      method: 'POST',
+      body: JSON.stringify({ sql, params, limit: 1000 }),
+    }),
   getDiscovered: async (id: number) =>
     toDiscoveredDB(await request<RawDiscoveredDB>(`/api/discovered/${id}`)),
   deleteDiscovered: (id: number) =>
     request<{ success: boolean }>(`/api/discovered/${id}`, { method: 'DELETE' }),
+  updateFavorite: (id: number, favorite: boolean) =>
+    request<{ success: boolean; favorite: boolean }>(`/api/discovered/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ favorite }),
+    }),
   startReplication: (id: number) => request<{ success: boolean }>(`/api/discovered/${id}/replicate`, { method: 'POST' }),
   stopReplication: (id: number) => request<{ success: boolean }>(`/api/discovered/${id}/replicate`, { method: 'DELETE' }),
   restoreSnapshot: (id: number, version?: number) =>

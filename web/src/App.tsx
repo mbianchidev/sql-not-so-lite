@@ -14,7 +14,7 @@ function App() {
   const [selectedDb, setSelectedDb] = useState<string | null>(null);
   const [selectedTable, setSelectedTable] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<DatabaseTab>('browse');
-  const [view, setView] = useState<View>('database');
+  const [view, setView] = useState<View>('discovered');
   const [darkMode, setDarkMode] = useState(true);
   const [selectedDiscoveredId, setSelectedDiscoveredId] = useState<number | null>(null);
 
@@ -98,7 +98,12 @@ function App() {
             ) : selectedDb ? (
               <>
                 {activeTab === 'browse' && selectedTable && (
-                  <TableBrowser dbName={selectedDb} tableName={selectedTable} />
+                  <TableBrowser
+                    dbName={selectedDb}
+                    tableName={selectedTable}
+                    tableInfo={tables.find((table) => table.Name === selectedTable)}
+                    onDataChange={async () => { await Promise.all([refresh(), refreshSchema()]); }}
+                  />
                 )}
                 {activeTab === 'browse' && !selectedTable && (
                   <SchemaViewer

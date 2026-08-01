@@ -1,6 +1,6 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { api, type DiscoveredDB } from '../api/client';
-import { SchemaTimeline } from './SchemaTimeline';
+import { DiscoveredInspector } from './DiscoveredInspector';
 
 interface Props {
   selectedId: number | null;
@@ -15,14 +15,17 @@ const PRIORITY_LABELS: Record<string, string> = {
   other: 'Other',
 };
 
+const DEFAULT_SCAN_PATH = '~/';
+
 function formatSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-function statusClass(status: string, isReplica: boolean): string {
+function statusClass(status: string, isReplica: boolean, available: boolean): string {
   if (isReplica) return 'replica';
+  if (!available) return 'missing';
   switch (status) {
     case 'replicating': return 'replicating';
     case 'paused': return 'paused';
@@ -31,8 +34,9 @@ function statusClass(status: string, isReplica: boolean): string {
   }
 }
 
-function statusLabel(status: string, isReplica: boolean): string {
+function statusLabel(status: string, isReplica: boolean, available: boolean): string {
   if (isReplica) return 'Replica';
+  if (!available) return 'Missing';
   switch (status) {
     case 'replicating': return 'Replicating';
     case 'paused': return 'Paused';
@@ -45,13 +49,15 @@ function statusLabel(status: string, isReplica: boolean): string {
 export function DiscoveredPanel({ selectedId, onSelect }: Props) {
   const [databases, setDatabases] = useState<DiscoveredDB[]>([]);
   const [loading, setLoading] = useState(false);
-  const [scanning, setScanning] = useState(false);
+  const [manualScanning, setManualScanning] = useState(false);
+  const [serverScanning, setServerScanning] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [scanMessage, setScanMessage] = useState<string | null>(null);
   const [actionLoading, setActionLoading] = useState<number | null>(null);
-  const [scanPath, setScanPath] = useState('');
-  const [showScanInput, setShowScanInput] = useState(false);
+  const [scanPath, setScanPath] = useState(DEFAULT_SCAN_PATH);
   const [searchQuery, setSearchQuery] = useState('');
+  const scanWasInProgress = useRef(false);
+  const scanning = manualScanning || serverScanning;
 
   const refresh = useCallback(async () => {
     try {
@@ -66,11 +72,9 @@ export function DiscoveredPanel({ selectedId, onSelect }: Props) {
     }
   }, []);
 
-  useEffect(() => { refresh(); }, [refresh]);
-
-  const handleScan = async (paths?: string[]): Promise<boolean> => {
+  const scan = useCallback(async (paths: string[]): Promise<boolean> => {
     try {
-      setScanning(true);
+      setManualScanning(true);
       setError(null);
       setScanMessage(null);
       const result = await api.scanDatabases(paths);
@@ -80,21 +84,52 @@ export function DiscoveredPanel({ selectedId, onSelect }: Props) {
       );
       return true;
     } catch (err) {
+      if (err instanceof Error && err.message === 'scan already in progress') {
+        scanWasInProgress.current = true;
+        setServerScanning(true);
+        return false;
+      }
       setError(err instanceof Error ? err.message : 'Scan failed');
       return false;
     } finally {
-      setScanning(false);
+      setManualScanning(false);
     }
-  };
+  }, [refresh]);
 
-  const handleScanPath = async () => {
+  const handleScan = async () => {
     const trimmed = scanPath.trim();
     if (!trimmed) return;
-    if (await handleScan([trimmed])) {
-      setScanPath('');
-      setShowScanInput(false);
-    }
+    await scan([trimmed]);
   };
+
+  useEffect(() => {
+    let active = true;
+
+    const pollScanStatus = async () => {
+      try {
+        const status = await api.getScanStatus();
+        if (!active) return;
+        const completed = scanWasInProgress.current && !status.in_progress;
+        scanWasInProgress.current = status.in_progress;
+        setServerScanning(status.in_progress);
+        if (completed) {
+          await refresh();
+        }
+      } catch (err) {
+        if (active) {
+          setError(err instanceof Error ? err.message : 'Failed to load scan status');
+        }
+      }
+    };
+
+    void refresh();
+    void pollScanStatus();
+    const interval = window.setInterval(() => void pollScanStatus(), 1000);
+    return () => {
+      active = false;
+      window.clearInterval(interval);
+    };
+  }, [refresh]);
 
   const handleReplicate = async (id: number) => {
     try {
@@ -115,6 +150,18 @@ export function DiscoveredPanel({ selectedId, onSelect }: Props) {
       await refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to stop replication');
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
+  const handleFavorite = async (id: number, favorite: boolean) => {
+    try {
+      setActionLoading(id);
+      await api.updateFavorite(id, favorite);
+      await refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to update favorite');
     } finally {
       setActionLoading(null);
     }
@@ -161,10 +208,12 @@ export function DiscoveredPanel({ selectedId, onSelect }: Props) {
       db.SQLiteVersion,
       db.JournalMode,
       db.IsReplica ? 'replica' : '',
+      db.Favorite ? 'favorite' : '',
+      db.Available ? '' : 'missing',
     ].some((value) => value?.toLocaleLowerCase().includes(query)));
   }, [databases, searchQuery]);
 
-  const selected = filteredDatabases.find((db) => db.ID === selectedId) ?? null;
+  const selected = databases.find((db) => db.ID === selectedId) ?? null;
   const isFiltering = searchQuery.trim().length > 0;
 
   return (
@@ -172,35 +221,23 @@ export function DiscoveredPanel({ selectedId, onSelect }: Props) {
       <div className="discovered-header">
         <h3>Discovered Databases</h3>
         <div className="discovered-actions">
-          <button className="btn-primary" onClick={() => handleScan()} disabled={scanning}>
-            {scanning ? 'Scanning…' : '⟳ Scan'}
-          </button>
-          <button
-            className="btn-sm"
-            onClick={() => setShowScanInput(!showScanInput)}
-            title="Scan a specific path"
-          >
-            📁
-          </button>
           <button className="btn-icon" onClick={refresh} title="Refresh list">⟳</button>
         </div>
       </div>
 
-      {showScanInput && (
-        <div className="scan-path-input">
-          <input
-            type="text"
-            value={scanPath}
-            onChange={(e) => setScanPath(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && handleScanPath()}
-            placeholder="Enter path to scan…"
-            disabled={scanning}
-          />
-          <button className="btn-sm" onClick={handleScanPath} disabled={scanning || !scanPath.trim()}>
-            Scan Path
-          </button>
-        </div>
-      )}
+      <div className="scan-path-input">
+        <input
+          type="text"
+          value={scanPath}
+          onChange={(e) => setScanPath(e.target.value)}
+          onKeyDown={(e) => e.key === 'Enter' && handleScan()}
+          placeholder="Enter path to scan…"
+          disabled={scanning}
+        />
+        <button className="btn-primary" onClick={handleScan} disabled={scanning || !scanPath.trim()}>
+          {scanning ? 'Scanning…' : 'Scan'}
+        </button>
+      </div>
 
       {error && <div className="error-msg">{error}</div>}
       {scanMessage && <div className="scan-result">{scanMessage}</div>}
@@ -232,18 +269,37 @@ export function DiscoveredPanel({ selectedId, onSelect }: Props) {
         </div>
       )}
 
+      {selected && (
+        <div className="discovered-detail">
+          <DiscoveredInspector key={selected.ID} database={selected} />
+        </div>
+      )}
+
       <div className="discovered-list">
         {filteredDatabases.map((db) => (
           <div
             key={db.ID}
-            className={`discovered-item ${selectedId === db.ID ? 'active' : ''}`}
+            className={`discovered-item ${selectedId === db.ID ? 'active' : ''} ${db.Available ? '' : 'missing'}`}
             onClick={() => onSelect(selectedId === db.ID ? null : db.ID)}
           >
             <div className="discovered-item-header">
-              <span className={`status-indicator ${statusClass(db.Status, db.IsReplica)}`} />
+              <span className={`status-indicator ${statusClass(db.Status, db.IsReplica, db.Available)}`} />
               <span className="discovered-name">{db.Name}</span>
+              <button
+                type="button"
+                className={`favorite-toggle ${db.Favorite ? 'active' : ''}`}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  void handleFavorite(db.ID, !db.Favorite);
+                }}
+                disabled={actionLoading === db.ID}
+                aria-label={db.Favorite ? `Remove ${db.Name} from favorites` : `Add ${db.Name} to favorites`}
+                title={db.Favorite ? 'Remove from favorites' : 'Add to favorites'}
+              >
+                {db.Favorite ? '★' : '☆'}
+              </button>
               <span className={`discovered-status-label ${db.IsReplica ? 'replica' : ''}`}>
-                {statusLabel(db.Status, db.IsReplica)}
+                {statusLabel(db.Status, db.IsReplica, db.Available)}
               </span>
               <span className={`priority-badge priority-${db.Priority}`}>
                 {PRIORITY_LABELS[db.Priority] ?? db.Priority}
@@ -280,7 +336,7 @@ export function DiscoveredPanel({ selectedId, onSelect }: Props) {
             </div>
 
             <div className="discovered-item-actions">
-              {!db.IsReplica && (db.Status === 'discovered' || db.Status === 'paused' || db.Status === 'error') && (
+              {db.Available && !db.IsReplica && (db.Status === 'discovered' || db.Status === 'paused' || db.Status === 'error') && (
                 <button
                   className="btn-sm"
                   onClick={(e) => { e.stopPropagation(); handleReplicate(db.ID); }}
@@ -298,7 +354,7 @@ export function DiscoveredPanel({ selectedId, onSelect }: Props) {
                   ⏸ Stop
                 </button>
               )}
-              {(db.Status === 'replicating' || db.Status === 'paused') && (
+              {db.Available && (db.Status === 'replicating' || db.Status === 'paused') && (
                 <button
                   className="btn-sm"
                   onClick={(e) => { e.stopPropagation(); handleRestore(db.ID, db.Name); }}
@@ -333,11 +389,6 @@ export function DiscoveredPanel({ selectedId, onSelect }: Props) {
         )}
       </div>
 
-      {selected && (
-        <div className="discovered-detail">
-          <SchemaTimeline dbId={selected.ID} dbName={selected.Name} />
-        </div>
-      )}
     </div>
   );
 }

@@ -28,6 +28,8 @@ type DiscoveredDB struct {
 	GitHubRepo    string
 	GitHubURL     string
 	Priority      string
+	Favorite      bool
+	Available     bool
 }
 
 type ReplicationState struct {
@@ -89,6 +91,8 @@ CREATE TABLE IF NOT EXISTS discovered_databases (
 	github_repo    TEXT,
 	github_url     TEXT,
 	priority       TEXT DEFAULT 'other',
+	favorite       INTEGER NOT NULL DEFAULT 0,
+	available      INTEGER NOT NULL DEFAULT 1,
 	CHECK(status IN ('discovered','replicating','paused','error','archived')),
 	CHECK(priority IN ('docker','workspace','copilot','app_data','other'))
 );
@@ -185,13 +189,14 @@ type scanner interface {
 
 const discoveredCols = `id, name, source_path, sqlite_version, page_size, journal_mode,
 	size_bytes, last_modified, first_seen, last_scanned, status,
-	error_message, github_repo, github_url, priority`
+	error_message, github_repo, github_url, priority, favorite, available`
 
 func scanDiscovered(s scanner) (*DiscoveredDB, error) {
 	var d DiscoveredDB
 	var sqliteVersion, journalMode, lastModified, errorMessage, githubRepo, githubURL, priority sql.NullString
 	var pageSize sql.NullInt64
 	var firstSeen, lastScanned string
+	var favorite, available int
 
 	err := s.Scan(
 		&d.ID, &d.Name, &d.SourcePath,
@@ -200,6 +205,7 @@ func scanDiscovered(s scanner) (*DiscoveredDB, error) {
 		&firstSeen, &lastScanned,
 		&d.Status, &errorMessage,
 		&githubRepo, &githubURL, &priority,
+		&favorite, &available,
 	)
 	if err != nil {
 		return nil, err
@@ -215,6 +221,8 @@ func scanDiscovered(s scanner) (*DiscoveredDB, error) {
 	d.GitHubRepo = githubRepo.String
 	d.GitHubURL = githubURL.String
 	d.Priority = priority.String
+	d.Favorite = favorite != 0
+	d.Available = available != 0
 	if d.Priority == "" {
 		d.Priority = "other"
 	}
@@ -241,8 +249,54 @@ func Open(dataDir string) (*Catalog, error) {
 		db.Close()
 		return nil, fmt.Errorf("catalog: schema: %w", err)
 	}
+	if err := ensureDiscoveryColumns(db); err != nil {
+		db.Close()
+		return nil, err
+	}
 
 	return &Catalog{db: db}, nil
+}
+
+func ensureDiscoveryColumns(db *sql.DB) error {
+	rows, err := db.Query(`SELECT name FROM pragma_table_info(?)`, "discovered_databases")
+	if err != nil {
+		return fmt.Errorf("catalog: inspect discovered columns: %w", err)
+	}
+	columns := make(map[string]bool)
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			rows.Close()
+			return fmt.Errorf("catalog: scan discovered columns: %w", err)
+		}
+		columns[name] = true
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("catalog: close discovered columns: %w", err)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("catalog: list discovered columns: %w", err)
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("catalog: begin discovery migration: %w", err)
+	}
+	defer tx.Rollback()
+	if !columns["favorite"] {
+		if _, err := tx.Exec(`ALTER TABLE discovered_databases ADD COLUMN favorite INTEGER NOT NULL DEFAULT 0`); err != nil {
+			return fmt.Errorf("catalog: add favorite column: %w", err)
+		}
+	}
+	if !columns["available"] {
+		if _, err := tx.Exec(`ALTER TABLE discovered_databases ADD COLUMN available INTEGER NOT NULL DEFAULT 1`); err != nil {
+			return fmt.Errorf("catalog: add available column: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("catalog: commit discovery migration: %w", err)
+	}
+	return nil
 }
 
 func (c *Catalog) Close() error {
@@ -298,7 +352,8 @@ func (c *Catalog) UpsertDiscovered(d *DiscoveredDB) (int64, error) {
 			error_message  = excluded.error_message,
 			github_repo    = excluded.github_repo,
 			github_url     = excluded.github_url,
-			priority       = excluded.priority
+			priority       = excluded.priority,
+			available      = 1
 		RETURNING id`,
 		d.Name, d.SourcePath,
 		nullStr(d.SQLiteVersion), nullInt(d.PageSize), nullStr(d.JournalMode),
@@ -375,7 +430,7 @@ func (c *Catalog) ListDiscovered() ([]DiscoveredDB, error) {
 	defer c.mu.RUnlock()
 
 	rows, err := c.db.Query(`SELECT ` + discoveredCols + ` FROM discovered_databases
-		ORDER BY CASE priority
+		ORDER BY favorite DESC, available DESC, CASE priority
 			WHEN 'docker' THEN 1
 			WHEN 'workspace' THEN 2
 			WHEN 'copilot' THEN 3
@@ -396,6 +451,69 @@ func (c *Catalog) ListDiscovered() ([]DiscoveredDB, error) {
 		out = append(out, *d)
 	}
 	return out, rows.Err()
+}
+
+func (c *Catalog) ListDiscoveredByStatus(status string) ([]DiscoveredDB, error) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	rows, err := c.db.Query(
+		`SELECT `+discoveredCols+` FROM discovered_databases WHERE status = ? ORDER BY id`,
+		status,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("catalog: list discovered by status: %w", err)
+	}
+	defer rows.Close()
+
+	var out []DiscoveredDB
+	for rows.Next() {
+		d, err := scanDiscovered(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *d)
+	}
+	return out, rows.Err()
+}
+
+func (c *Catalog) UpdateFavorite(id int64, favorite bool) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	result, err := c.db.Exec(`UPDATE discovered_databases SET favorite = ? WHERE id = ?`, favorite, id)
+	if err != nil {
+		return fmt.Errorf("catalog: update favorite: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("catalog: update favorite rows: %w", err)
+	}
+	if affected == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
+func (c *Catalog) UpdateAvailability(id int64, available bool) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	result, err := c.db.Exec(
+		`UPDATE discovered_databases SET available = ?, last_scanned = ? WHERE id = ?`,
+		available,
+		time.Now().Format(time.RFC3339),
+		id,
+	)
+	if err != nil {
+		return fmt.Errorf("catalog: update availability: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("catalog: update availability rows: %w", err)
+	}
+	if affected == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
 }
 
 func (c *Catalog) UpdateStatus(id int64, status, errMsg string) error {

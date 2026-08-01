@@ -13,7 +13,8 @@ import (
 // CreateSnapshot creates a consistent snapshot of a source SQLite database
 // using VACUUM INTO, which produces a complete, defragmented copy.
 func CreateSnapshot(sourcePath, destPath string) (int64, error) {
-	if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
+	destDir := filepath.Dir(destPath)
+	if err := os.MkdirAll(destDir, 0755); err != nil {
 		return 0, fmt.Errorf("failed to create snapshot dir: %w", err)
 	}
 
@@ -33,14 +34,34 @@ func CreateSnapshot(sourcePath, destPath string) (int64, error) {
 		return 0, fmt.Errorf("failed to connect to source: %w", err)
 	}
 
-	_, err = db.Exec(fmt.Sprintf("VACUUM INTO '%s'", destPath))
+	tempFile, err := os.CreateTemp(destDir, "."+filepath.Base(destPath)+".tmp-*")
+	if err != nil {
+		return 0, fmt.Errorf("failed to create snapshot temp file: %w", err)
+	}
+	tempPath := tempFile.Name()
+	if err := tempFile.Close(); err != nil {
+		os.Remove(tempPath)
+		return 0, fmt.Errorf("failed to close snapshot temp file: %w", err)
+	}
+	if err := os.Remove(tempPath); err != nil {
+		return 0, fmt.Errorf("failed to prepare snapshot temp path: %w", err)
+	}
+	defer os.Remove(tempPath)
+
+	_, err = db.Exec("VACUUM INTO ?", tempPath)
 	if err != nil {
 		return 0, fmt.Errorf("VACUUM INTO failed: %w", err)
 	}
 
-	info, err := os.Stat(destPath)
+	info, err := os.Stat(tempPath)
 	if err != nil {
 		return 0, fmt.Errorf("failed to stat snapshot: %w", err)
+	}
+	if err := os.Rename(tempPath, destPath); err != nil {
+		return 0, fmt.Errorf("failed to replace snapshot: %w", err)
+	}
+	for _, suffix := range []string{"-wal", "-shm"} {
+		os.Remove(destPath + suffix)
 	}
 
 	return info.Size(), nil

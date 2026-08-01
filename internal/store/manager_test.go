@@ -136,6 +136,47 @@ func TestListDatabases(t *testing.T) {
 	}
 }
 
+func TestDatabasePersistsAcrossManagerRestart(t *testing.T) {
+	dir := t.TempDir()
+	manager, err := NewManager(dir, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry, err := manager.Create("persisted")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := entry.DB.Exec("CREATE TABLE saved (id INTEGER PRIMARY KEY, value TEXT)"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := entry.DB.Exec("INSERT INTO saved (value) VALUES ('kept')"); err != nil {
+		t.Fatal(err)
+	}
+	manager.CloseAll()
+
+	restarted, err := NewManager(dir, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer restarted.CloseAll()
+
+	list := restarted.List()
+	if len(list) != 1 || list[0].Name != "persisted" {
+		t.Fatalf("persisted database missing after restart: %+v", list)
+	}
+	reopened, err := restarted.Get("persisted")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var value string
+	if err := reopened.DB.QueryRow("SELECT value FROM saved").Scan(&value); err != nil {
+		t.Fatal(err)
+	}
+	if value != "kept" {
+		t.Fatalf("persisted value = %q, want kept", value)
+	}
+}
+
 func TestDropDatabase(t *testing.T) {
 	m, dir := setupTestManager(t)
 	defer m.CloseAll()
