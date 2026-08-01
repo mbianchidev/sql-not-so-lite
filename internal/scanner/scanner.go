@@ -384,6 +384,9 @@ func canonicalPaths(paths []string) []string {
 }
 
 func canonicalPath(path string) string {
+	if path == "" {
+		return ""
+	}
 	absolutePath, err := filepath.Abs(path)
 	if err != nil {
 		return filepath.Clean(path)
