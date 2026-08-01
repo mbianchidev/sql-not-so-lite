@@ -124,7 +124,8 @@ export function TableBrowser({ dbName, tableName, tableInfo, onDataChange }: Pro
             aria-expanded={showRowComposer}
             title="Add row"
           >
-            +
+            <span className="add-row-button-icon" aria-hidden="true">+</span>
+            <span>Add row</span>
           </button>
           <div className="pagination">
             <button

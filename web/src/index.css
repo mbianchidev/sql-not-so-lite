@@ -412,22 +412,36 @@ tr:hover td { background: rgba(122, 162, 247, 0.05); }
 }
 .table-header-actions { display: flex; align-items: center; gap: 0.75rem; }
 .add-row-button {
-  display: grid;
-  width: 1.75rem;
-  height: 1.75rem;
-  place-items: center;
-  padding: 0;
-  border: 1px solid var(--border);
-  border-radius: 50%;
-  background: var(--bg-secondary);
-  color: var(--accent);
-  font-size: 1.25rem;
+  display: inline-flex;
+  min-height: 2rem;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.35rem 0.75rem;
+  border: 1px solid var(--accent);
+  border-radius: 5px;
+  background: var(--accent);
+  color: white;
+  font-size: 0.8rem;
+  font-weight: 600;
   line-height: 1;
+  transition: background 0.15s, border-color 0.15s, box-shadow 0.15s;
 }
-.add-row-button:hover,
+.add-row-button-icon {
+  font-size: 1.15rem;
+  font-weight: 400;
+  line-height: 0.75;
+}
+.add-row-button:hover {
+  border-color: var(--accent-hover);
+  background: var(--accent-hover);
+  color: white;
+}
 .add-row-button.active {
-  border-color: var(--accent);
-  background: var(--bg-tertiary);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 25%, transparent);
+}
+.add-row-button:focus-visible {
+  outline: 2px solid var(--accent-hover);
+  outline-offset: 2px;
 }
 .pagination { display: flex; align-items: center; gap: 0.5rem; }
 .page-info { font-size: 0.8rem; color: var(--text-muted); }
