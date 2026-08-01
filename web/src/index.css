@@ -97,7 +97,7 @@ body {
 }
 .create-db input:focus { border-color: var(--accent); }
 
-.db-list { list-style: none; }
+.db-list { flex: 1; list-style: none; overflow-y: auto; }
 
 .db-item {
   padding: 0.6rem 1rem;
@@ -123,6 +123,46 @@ body {
 .status-dot.active { background: var(--success); }
 
 .db-name { font-weight: 500; font-size: 0.85rem; }
+
+.sidebar-menu {
+  padding: 0.75rem;
+  border-top: 1px solid var(--border);
+}
+.sidebar-menu-item {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  gap: 0.65rem;
+  padding: 0.7rem 0.75rem;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  text-align: left;
+}
+.sidebar-menu-item:hover {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+}
+.sidebar-menu-item.active {
+  background: var(--bg-tertiary);
+  border-color: var(--accent);
+  color: var(--text-primary);
+}
+.sidebar-menu-icon {
+  color: var(--accent);
+  font-family: monospace;
+  font-size: 1.25rem;
+}
+.sidebar-menu-item strong,
+.sidebar-menu-item small { display: block; }
+.sidebar-menu-item strong { font-size: 0.82rem; }
+.sidebar-menu-item small {
+  margin-top: 0.15rem;
+  color: var(--text-muted);
+  font-size: 0.68rem;
+}
 
 .main-panel { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
 
@@ -200,6 +240,43 @@ tr:hover td { background: rgba(122, 162, 247, 0.05); }
   border-radius: 6px;
 }
 .schema-form-inline { align-items: flex-start; }
+.schema-form-heading h4 {
+  color: var(--text-primary);
+  font-size: 0.85rem;
+}
+.schema-form-heading p {
+  margin-top: 0.15rem;
+  color: var(--text-muted);
+  font-size: 0.72rem;
+}
+.create-table-columns {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+.create-table-column {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+.create-table-column .column-form { flex: 1; }
+.create-table-column-number {
+  width: 1.3rem;
+  color: var(--text-muted);
+  font-family: monospace;
+  font-size: 0.7rem;
+  text-align: center;
+}
+.create-table-column-remove:disabled {
+  cursor: not-allowed;
+  opacity: 0.3;
+}
+.create-table-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
 .column-form { display: flex; flex-wrap: wrap; gap: 0.4rem; align-items: center; }
 .column-form input[type='text'],
 .column-form input:not([type]),
@@ -395,6 +472,65 @@ tr:hover td { background: rgba(122, 162, 247, 0.05); }
 .discovered-header h3 { font-size: 1rem; font-weight: 600; }
 .discovered-actions { display: flex; gap: 0.5rem; align-items: center; }
 
+.discovered-search {
+  display: flex;
+  align-items: center;
+  min-height: 2.5rem;
+  padding: 0 0.75rem;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.discovered-search:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 20%, transparent);
+}
+.discovered-search-icon {
+  color: var(--accent);
+  font-family: monospace;
+  font-size: 1.15rem;
+  line-height: 1;
+  margin-right: 0.5rem;
+}
+.discovered-search input {
+  flex: 1;
+  min-width: 0;
+  padding: 0.55rem 0;
+  background: transparent;
+  border: 0;
+  color: var(--text-primary);
+  font-size: 0.8rem;
+  outline: none;
+}
+.discovered-search input::placeholder { color: var(--text-muted); }
+.discovered-search input::-webkit-search-cancel-button { display: none; }
+.discovered-search-count {
+  color: var(--text-muted);
+  font-family: monospace;
+  font-size: 0.7rem;
+  white-space: nowrap;
+}
+.discovered-search-clear,
+.discovered-empty-clear {
+  background: none;
+  border: 0;
+  color: var(--accent);
+  cursor: pointer;
+  font: inherit;
+}
+.discovered-search-clear {
+  margin-left: 0.65rem;
+  font-size: 0.7rem;
+}
+.discovered-search-clear:hover,
+.discovered-empty-clear:hover { color: var(--accent-hover); }
+.discovered-search-clear:focus-visible,
+.discovered-empty-clear:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
 .discovered-list {
   display: flex;
   flex-direction: column;
@@ -459,6 +595,11 @@ tr:hover td { background: rgba(122, 162, 247, 0.05); }
   color: var(--text-muted);
   padding: 2rem;
   font-size: 0.9rem;
+}
+.discovered-empty-clear {
+  display: block;
+  margin: 0.75rem auto 0;
+  font-size: 0.8rem;
 }
 
 .scan-path-input {

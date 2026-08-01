@@ -6,9 +6,18 @@ interface Props {
   selectedDb: string | null;
   onSelect: (name: string) => void;
   onRefresh: () => void;
+  discoveryActive: boolean;
+  onOpenDiscovery: () => void;
 }
 
-export function DatabaseList({ databases, selectedDb, onSelect, onRefresh }: Props) {
+export function DatabaseList({
+  databases,
+  selectedDb,
+  onSelect,
+  onRefresh,
+  discoveryActive,
+  onOpenDiscovery,
+}: Props) {
   const [newDbName, setNewDbName] = useState('');
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -96,6 +105,21 @@ export function DatabaseList({ databases, selectedDb, onSelect, onRefresh }: Pro
           <li className="db-item empty">No databases yet</li>
         )}
       </ul>
+
+      <nav className="sidebar-menu" aria-label="Global navigation">
+        <button
+          type="button"
+          className={`sidebar-menu-item ${discoveryActive ? 'active' : ''}`}
+          onClick={onOpenDiscovery}
+          aria-current={discoveryActive ? 'page' : undefined}
+        >
+          <span className="sidebar-menu-icon" aria-hidden="true">⌕</span>
+          <span>
+            <strong>Discovery</strong>
+            <small>Scan and search databases</small>
+          </span>
+        </button>
+      </nav>
     </div>
   );
 }
