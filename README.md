@@ -22,6 +22,8 @@ Lightweight SQLite-as-a-service daemon. Manages multiple SQLite databases as fil
                      └─────────────────┘
 ```
 
+<img width="1710" height="949" alt="image" src="https://github.com/user-attachments/assets/eee13914-f61f-483f-b58c-dd04d950286a" />
+
 ## Features
 
 - **Multi-database**: Each app creates its own `.sqlite` file
@@ -30,7 +32,7 @@ Lightweight SQLite-as-a-service daemon. Manages multiple SQLite databases as fil
 - **Idle management**: Closes idle connections automatically, stays dormant when unused (~5-10MB RSS)
 - **Single binary**: GUI embedded via `go:embed` — one file to run
 - **Cross-platform**: macOS (launchd), Linux (systemd), Docker
-- **Database discovery**: Scans `$HOME` for SQLite databases across containers, app data dirs, and workspaces
+- **Database discovery**: Scans `$HOME` (by default, configurable) for SQLite databases across containers, app data dirs, and workspaces
 - **Persistent discovery**: Keeps scan history, missing-file state, and favorites across restarts
 - **Differential replication**: Resumes active replicas after restart and updates only changed tables
 - **Point-in-time recovery**: Restore any discovered database from snapshots
