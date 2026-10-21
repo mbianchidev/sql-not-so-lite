@@ -132,8 +132,9 @@ tagged commit to be reachable from `main` and the original tag to still exist
 at the expected object. A removed/replaced tag must not be revived by rerunning
 an old workflow.
 
-After changes have been reviewed and merged, use a clean checkout of current
-`origin/main` and a new stable version:
+After changes have been reviewed and merged, use a clean checkout and a new
+stable version. The script switches to `main` and pulls `origin/main` before
+release checks:
 
 ```bash
 ./release.sh 0.0.3  # v0.0.3 is equivalent
@@ -182,11 +183,20 @@ pseudo-terminals. These tests additionally require Python 3.9+ and its
 standard-library `pty` module on macOS or Linux. Running a release does not
 require Python.
 
-The script requires a clean checkout whose `HEAD` equals the advertised
-`origin/main` commit. It does not switch branches, fetch into local branches,
-stash changes, or update `main`. `origin` and any explicit push URL must refer
-to this repository. Active Git operations and another local release invocation
-are rejected.
+Before changing branches, the script requires a clean checkout, validates that
+`origin` and any explicit push URL refer to this repository, rejects active Git
+operations, and acquires the shared release lock. It then switches to `main`
+and pulls explicitly from `origin/main` using fast-forward-only updates,
+regardless of local pull/rebase/autostash settings. This happens before GitHub
+authentication, version inventory, or tag creation.
+
+Unpushed local `main` commits, divergent history, or a failed pull stop the
+release without creating a tag. Local work is never stashed, reset, rebased,
+or merged into a release. If `main` is already checked out in another worktree,
+run the script from that worktree instead. Other branches remain untouched.
+The script leaves `main` checked out and does not undo its fast-forward update
+after later failures or release rollback. `HEAD` must still equal the advertised
+`origin/main` commit immediately before tagging.
 
 Product versions are canonical `vMAJOR.MINOR.PATCH` Git tags. GoReleaser strips
 the `v` and injects the version into `server.Version` for the CLI, HTTP, and
@@ -261,9 +271,9 @@ the source repository's Release run.
 journal, remote refs, and exact workflow before recovery. A stale lock is
 never removed automatically; remove it only after confirming no owner process
 is still running. After a confirmed clean pre-publication rollback, rerun
-`./release.sh vVERSION` from a clean checkout of current `origin/main` to retry
-the same version. This creates a new tag invocation and workflow run; do not
-manually retag or rerun the old workflow. The script revalidates history and
+`./release.sh vVERSION` from a clean checkout to retry the same version.
+The script updates `main` again, then creates a new tag invocation and workflow
+run; do not manually retag or rerun the old workflow. The script revalidates history and
 publication state before allowing reuse. Previously published or uncertain
 versions still require a new version or explicit coordinated recovery.
 
