@@ -1,8 +1,14 @@
 # Installation and releases
 
+[Documentation index](README.md) | [Installation guide](installation.md) | [Developer guide](development.md)
+
 ## Release contents
 
-Each `vMAJOR.MINOR.PATCH` tag publishes these files to GitHub Releases:
+The configured `vMAJOR.MINOR.PATCH` release workflow publishes the following
+artifacts, available starting with `v0.0.3`. The older `v0.0.1` and `v0.0.2`
+releases are source-only; check
+[actual release assets](https://github.com/mbianchidev/sql-not-so-lite/releases)
+before using package, archive, or published-image instructions.
 
 | Platform | Architectures | Artifacts |
 |----------|---------------|-----------|
