@@ -81,7 +81,7 @@ class Release {
     renameSync(`${this.journal}.tmp`, this.journal)
   }
 
-  async command(program, args, { input = '', allow = [] } = {}) {
+  async command(program, args, { input, allow = [] } = {}) {
     if (!this.cleaning && this.abort.signal.aborted) throw this.abort.signal.reason
     const deadline = this.cleaning ? this.cleanupDeadline : this.deadline
     const remaining = deadline === undefined ? this.config.command : deadline - Date.now()
@@ -97,8 +97,10 @@ class Release {
         signal: this.cleaning ? undefined : this.abort.signal,
       })
       let inputError
-      promise.child.stdin.on('error', error => { inputError = error })
-      promise.child.stdin.end(input)
+      if (input !== undefined) {
+        promise.child.stdin.on('error', error => { inputError = error })
+        promise.child.stdin.end(input)
+      }
       const { stdout } = await promise
       if (inputError) throw inputError
       return stdout.trim()
