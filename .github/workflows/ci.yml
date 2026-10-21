@@ -122,6 +122,6 @@ jobs:
         if: runner.os == 'Linux'
         run: bash scripts/test-packages.sh dist
 
-      - name: Validate Homebrew formula syntax
+      - name: Install and test Homebrew formula against snapshot archives
         if: runner.os == 'macOS'
-        run: ruby -c dist/sql-not-so-lite.rb
+        run: bash scripts/test-homebrew.sh dist

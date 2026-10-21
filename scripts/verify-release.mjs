@@ -3,9 +3,9 @@ import { execFileSync, spawn } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:net'
-import { tmpdir } from 'node:os'
 import { basename, join, resolve } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
+import { docker, runContainer } from './container.mjs'
 import { generateFormula, parseChecksums } from './homebrew.mjs'
 
 const dist = resolve(process.argv[2] ?? 'dist')
@@ -60,40 +60,45 @@ async function smoke(binary, home, image) {
 http_port = ${image ? 9147 : httpPort}
 grpc_port = ${image ? 50051 : grpcPort}
 `)
-  const env = {
+  const env = image ? process.env : {
     ...process.env,
     HOME: home,
     SQNSL_DATA_DIR: join(home, 'databases'),
     SQNSL_SCAN_ROOT: join(home, 'scan'),
   }
-  const prefix = image ? ['run', '--rm', image] : []
-  const executable = image ? 'docker' : binary
-  assert.equal(execFileSync(executable, [...prefix, 'version'], { env, encoding: 'utf8' }).trim(),
-    `sql-not-so-lite ${version}`)
+  const versionOutput = image
+    ? runContainer([image, 'version'])
+    : execFileSync(binary, ['version'], { env, encoding: 'utf8', timeout: 10_000 })
+  assert.equal(versionOutput.trim(), `sql-not-so-lite ${version}`)
 
   const container = `sqnsl-release-${randomUUID()}`
-  const args = image ? [
-    'run', '--rm', '--name', container,
-    '--user', `${process.getuid()}:${process.getgid()}`,
-    '--mount', `type=bind,source=${home},target=/data`,
-    '--publish', `127.0.0.1:${httpPort}:9147`,
-    image, 'start',
-  ] : ['start']
-  const child = spawn(executable, args, { env, stdio: ['ignore', 'pipe', 'pipe'] })
+  const child = image ? null : spawn(binary, ['start'], { env, stdio: ['ignore', 'pipe', 'pipe'] })
   let logs = ''
   let startError
-  child.stdout.on('data', data => { logs += data })
-  child.stderr.on('data', data => { logs += data })
-  const exited = new Promise(resolve => {
+  let created = false
+  child?.stdout.on('data', data => { logs += data })
+  child?.stderr.on('data', data => { logs += data })
+  const exited = child && new Promise(resolve => {
     child.once('error', error => { startError = error; resolve(null) })
     child.once('exit', resolve)
   })
   try {
+    if (image) {
+      docker([
+        'create', '--name', container,
+        '--user', `${process.getuid()}:${process.getgid()}`,
+        '--mount', `type=bind,source=${home},target=/data`,
+        '--publish', `127.0.0.1:${httpPort}:9147`,
+        image, 'start',
+      ])
+      created = true
+      docker(['start', container])
+    }
     const url = `http://127.0.0.1:${httpPort}`
     let ready = false
     for (let attempt = 0; attempt < 200; attempt++) {
       if (startError) throw startError
-      assert.equal(child.exitCode, null, `Daemon exited before readiness:\n${logs}`)
+      if (child) assert.equal(child.exitCode, null, `Daemon exited before readiness:\n${logs}`)
       try {
         const response = await fetch(`${url}/api/health`, { signal: AbortSignal.timeout(2000) })
         assert.ok(response.ok, `Health endpoint returned ${response.status}`)
@@ -117,22 +122,27 @@ grpc_port = ${image ? 50051 : grpcPort}
     assert.match(javascript.headers.get('content-type') ?? '', /javascript/)
     assert.ok((await javascript.text()).length > 1000, 'Embedded GUI asset is empty')
   } finally {
-    if (!startError && child.exitCode === null) {
-      if (image) execFileSync('docker', ['stop', '--time', '10', container], { stdio: 'pipe' })
-      else child.kill('SIGTERM')
+    if (created) {
+      try {
+        docker(['stop', '--time', '10', container])
+        const status = docker(['wait', container]).stdout.trim()
+        const output = docker(['logs', container])
+        assert.equal(status, '0', `Container failed to shut down cleanly:\n${output.stdout}${output.stderr}`)
+      } finally {
+        docker(['rm', '--force', container])
+      }
+    } else if (child) {
+      if (!startError && child.exitCode === null) child.kill('SIGTERM')
+      const timeout = setTimeout(() => child.kill('SIGKILL'), 15_000)
+      timeout.unref()
+      const code = await exited
+      clearTimeout(timeout)
+      if (!startError) assert.equal(code, 0, `Daemon failed to shut down cleanly:\n${logs}`)
     }
-    const timeout = setTimeout(() => {
-      if (image) execFileSync('docker', ['kill', container], { stdio: 'pipe' })
-      else child.kill('SIGKILL')
-    }, 15_000)
-    timeout.unref()
-    const code = await exited
-    clearTimeout(timeout)
-    assert.equal(code, 0, `Daemon failed to shut down cleanly:\n${logs}`)
   }
 }
 
-const temp = mkdtempSync(join(tmpdir(), 'sqnsl-release-'))
+const temp = mkdtempSync(join(dist, '.smoke-'))
 try {
   execFileSync('tar', ['-xzf', join(dist, `sql-not-so-lite_${version}_${os}_${arch}.tar.gz`), '-C', temp])
   await smoke(join(temp, 'sqnsl'), join(temp, 'native'))

@@ -32,11 +32,12 @@ gh release download "v$VERSION" --repo mbianchidev/sql-not-so-lite \
   --pattern "$ARCHIVE" --pattern checksums.txt
 grep "  $ARCHIVE$" checksums.txt | shasum -a 256 -c -
 tar -xzf "$ARCHIVE"
+mkdir -p "$HOME/.local/bin"
 install -m 755 sqnsl "$HOME/.local/bin/sqnsl"
 sqnsl version
 ```
 
-Create `$HOME/.local/bin` first if necessary, and add it to `PATH`. On Linux,
+Add `$HOME/.local/bin` to `PATH`. On Linux,
 `sha256sum -c` can be used instead of `shasum -a 256 -c`.
 
 ## Services and upgrades
@@ -147,3 +148,9 @@ separate local container images for both Linux architectures, verify checksums,
 run the native binary and container against isolated fixture directories, and
 install/remove native-architecture Debian and RPM packages in disposable
 containers. All runtime tests use temporary data, not the user's databases.
+
+On a Mac without an existing Homebrew installation of sql-not-so-lite, run
+`bash scripts/test-homebrew.sh dist` to install/test/remove the generated formula
+against local snapshot archives in a temporary tap. CI runs this on both Mac
+architectures. The check does not start a Homebrew service or change the public
+tap.

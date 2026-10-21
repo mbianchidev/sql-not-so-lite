@@ -8,6 +8,12 @@ case "$(uname -m)" in
   arm64|aarch64) arch=arm64 ;;
   *) echo "Unsupported package-test architecture: $(uname -m)" >&2; exit 1 ;;
 esac
+expected=$(mktemp -d "$dist/.package.XXXXXX")
+cleanup() {
+  node -e 'require("node:fs").rmSync(process.argv[1], {recursive: true, force: true})' "$expected"
+}
+trap cleanup EXIT
+tar -xzf "$dist/sql-not-so-lite_${version}_linux_${arch}.tar.gz" -C "$expected"
 
 for format in deb rpm; do
   if [ "$format" = deb ]; then
@@ -15,8 +21,9 @@ for format in deb rpm; do
   else
     image=fedora:latest
   fi
-  docker run --rm --platform "linux/$arch" \
+  node "$(dirname "$0")/container.mjs" --platform "linux/$arch" \
     --mount "type=bind,source=$dist,target=/packages,readonly" \
+    --mount "type=bind,source=$expected,target=/expected,readonly" \
     --env "VERSION=$version" --env "ARCH=$arch" --env "FORMAT=$format" \
     "$image" sh -eu -c '
       package="/packages/sql-not-so-lite_${VERSION}_linux_${ARCH}.${FORMAT}"
@@ -31,9 +38,7 @@ for format in deb rpm; do
       test -f /usr/lib/systemd/user/sqnsl.service
       grep -Fx "ExecStart=/usr/bin/sqnsl start" /usr/lib/systemd/user/sqnsl.service
       test ! -e /etc/systemd/system/sqnsl.service
-      mkdir /tmp/expected
-      tar -xzf "/packages/sql-not-so-lite_${VERSION}_linux_${ARCH}.tar.gz" -C /tmp/expected
-      cmp /usr/bin/sqnsl /tmp/expected/sqnsl
+      test "$(cd /usr/bin && sha256sum sqnsl)" = "$(cd /expected && sha256sum sqnsl)"
       if [ "$FORMAT" = deb ]; then
         dpkg --remove sql-not-so-lite
       else
