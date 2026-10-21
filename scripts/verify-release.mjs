@@ -106,7 +106,7 @@ grpc_port = ${image ? 50051 : grpcPort}
         ready = true
         break
       } catch (error) {
-        if (error.cause?.code !== 'ECONNREFUSED') throw error
+        if (!['ECONNREFUSED', 'ECONNRESET', 'UND_ERR_SOCKET'].includes(error.cause?.code)) throw error
         await sleep(100)
       }
     }
