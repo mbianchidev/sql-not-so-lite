@@ -294,18 +294,73 @@ class Release {
   async runs() {
     const runs = await this.items(`${repoAPI}/actions/workflows/${this.state.workflowId}/runs?` +
       `event=push&branch=${encodeURIComponent(this.tag)}&per_page=100`, 'workflow_runs')
-    return runs.filter(run => run.workflow_id === this.state.workflowId &&
+    const matches = runs.filter(run => run.workflow_id === this.state.workflowId &&
       run.head_branch === this.tag && run.event === 'push')
+    if (new Set(matches.map(run => run.id)).size !== matches.length) {
+      throw new Error('Duplicate Release run identities; refusing ambiguous ownership.')
+    }
+    const previous = new Map((this.state.previousRuns ?? []).map(run => [run.id, run]))
+    const current = matches.filter(run => {
+      const recorded = previous.get(run.id)
+      if (!recorded) return true
+      this.verifyRun(run, { commit: recorded.head_sha, id: recorded.id })
+      if (run.status !== 'completed' || run.conclusion !== recorded.conclusion) {
+        throw new Error(`Historical Release run ${run.id} changed; refusing uncertain ownership.`)
+      }
+      previous.delete(run.id)
+      return false
+    })
+    if (previous.size) throw new Error('Historical Release run visibility changed; manual recovery required.')
+    return current
   }
 
-  verifyRun(run) {
+  verifyRun(run, { commit = this.state.commit, id = this.state.runId } = {}) {
     if (!Number.isSafeInteger(run.id) || run.id <= 0 ||
       run.workflow_id !== this.state.workflowId || run.head_branch !== this.tag ||
-      run.head_sha !== this.state.commit || run.event !== 'push' ||
+      !hash.test(run.head_sha) || run.head_sha !== commit || run.event !== 'push' ||
       run.path !== '.github/workflows/release.yml' || run.run_attempt !== 1 ||
-      (this.state.runId !== undefined && run.id !== this.state.runId)) {
+      (id !== undefined && run.id !== id)) {
       throw new Error('Release workflow identity/attempt changed; refusing to touch concurrent work.')
     }
+  }
+
+  async publicationJobs(runId) {
+    const jobs = await this.items(`${repoAPI}/actions/runs/${runId}/attempts/1/jobs?per_page=100`, 'jobs')
+    const names = ['Publish release and multiarch image', 'Update Homebrew tap']
+    const publication = jobs.filter(job => names.includes(job.name))
+      .map(({ id, name, status, conclusion }) => ({ id, name, status, conclusion }))
+    if (publication.length !== 2 || !names.every(name => publication.filter(job => job.name === name).length === 1)) {
+      throw new Error(`Cannot prove both publication jobs were skipped for Release run ${runId}. ` +
+        'Tags and release resources preserved.')
+    }
+    return publication
+  }
+
+  async checkPreviousRuns() {
+    const runs = await this.runs()
+    if (this.state.previousRuns !== undefined) {
+      if (runs.length) throw new Error('Release run history changed before tag creation. Nothing was pushed.')
+      return
+    }
+    const previous = []
+    for (const run of runs) {
+      this.verifyRun(run, { commit: run.head_sha, id: run.id })
+      if (run.status !== 'completed' || !['failure', 'cancelled', 'timed_out'].includes(run.conclusion)) {
+        throw new Error(`Historical Release run ${run.id} is not a failed, completed first attempt; refusing to reuse ${this.tag}.`)
+      }
+      const publicationJobs = await this.publicationJobs(run.id)
+      if (publicationJobs.some(job => job.status !== 'completed' || job.conclusion !== 'skipped')) {
+        throw new Error(`Historical Release run ${run.id} started or may have started publication; refusing to reuse ${this.tag}.`)
+      }
+      const live = await this.api(`${repoAPI}/actions/runs/${run.id}`)
+      this.verifyRun(live, { commit: run.head_sha, id: run.id })
+      if (live.status !== run.status || live.conclusion !== run.conclusion) {
+        throw new Error(`Historical Release run ${run.id} changed while checking publication; refusing to reuse ${this.tag}.`)
+      }
+      previous.push({ id: run.id, head_sha: run.head_sha, run_attempt: 1, conclusion: run.conclusion, publicationJobs })
+    }
+    this.state.previousRuns = previous
+    if (previous.length) console.log(`Verified ${previous.length} earlier ${this.tag} run(s) stopped before publication; retrying safely.`)
   }
 
   async claimRun(run) {
@@ -387,7 +442,7 @@ class Release {
     this.state.workflowId = workflow.id
     this.state.baseline = await this.snapshot()
     this.requireUnclaimed(this.state.baseline)
-    if ((await this.runs()).length) throw new Error(`${this.tag} has historical Release runs. Do not reuse released versions.`)
+    await this.checkPreviousRuns()
   }
 
   async pause(deadline) {
@@ -418,6 +473,7 @@ class Release {
     this.requireUnclaimed(this.state.beforePush)
     await this.cleanCheckout()
     await this.checkRemote()
+    await this.checkPreviousRuns()
     this.state.tagObject = await this.command('git', ['mktag'], {
       input: `object ${this.state.commit}\ntype commit\ntag ${this.tag}\n` +
         `tagger ${this.committer}\n\nRelease ${this.tag}\n\nRelease-Invocation: ${this.state.invocation}\n`,
@@ -519,18 +575,8 @@ class Release {
         }
       }
       this.state.runConclusion = run.conclusion
-      const jobs = await this.items(
-        `${repoAPI}/actions/runs/${run.id}/attempts/1/jobs?per_page=100`, 'jobs',
-      )
-      this.state.publicationJobs = jobs.filter(job =>
-        ['Publish release and multiarch image', 'Update Homebrew tap'].includes(job.name),
-      ).map(({ id, name, status, conclusion }) => ({ id, name, status, conclusion }))
+      this.state.publicationJobs = await this.publicationJobs(run.id)
       this.save()
-      if (this.state.publicationJobs.length !== 2 ||
-        !['Publish release and multiarch image', 'Update Homebrew tap'].every(name =>
-          this.state.publicationJobs.filter(job => job.name === name).length === 1)) {
-        throw new Error('Cannot prove both publication jobs were skipped. Tags and release resources preserved.')
-      }
       this.state.after = await this.snapshot()
       this.save()
       if (this.state.publicationJobs.some(job => job.status !== 'completed' || job.conclusion !== 'skipped')) {

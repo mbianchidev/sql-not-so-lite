@@ -30,6 +30,7 @@ const tap = 'repos/mbianchidev/homebrew-tap'
 const packages = 'users/mbianchidev/packages'
 const tag = state.tag
 const ref = `refs/tags/${tag}`
+const runId = state.runId ?? 123
 const git = (...args) => execFileSync('git', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim()
 function remoteTag() {
   try {
@@ -73,7 +74,7 @@ function run() {
   const publishing = ['publish-failure', 'homebrew-failure', 'success'].includes(state.scenario)
   if (completed && publishing) state.published = true
   return {
-    id: 123,
+    id: runId,
     workflow_id: 42,
     head_branch: tag,
     head_sha: state.wrongHead ? 'b'.repeat(40) : state.commit,
@@ -83,9 +84,27 @@ function run() {
     status: completed ? 'completed' : 'in_progress',
     conclusion: !completed ? null : state.cancelled ? 'cancelled' :
       state.scenario === 'success' ? 'success' : 'failure',
-    html_url: 'https://github.com/mbianchidev/sql-not-so-lite/actions/runs/123',
+    html_url: `https://github.com/mbianchidev/sql-not-so-lite/actions/runs/${runId}`,
   }
 }
+
+function previousRuns() {
+  return (state.previousRuns ?? []).map((run, index) => ({
+    id: 100 + index,
+    workflow_id: 42,
+    head_branch: tag,
+    head_sha: run.sameCommit ? state.commit : '9'.repeat(40),
+    event: 'push',
+    path: '.github/workflows/release.yml',
+    run_attempt: 1,
+    status: 'completed',
+    conclusion: 'failure',
+    ...run,
+  }))
+}
+
+const previousRun = previousRuns().find(run => endpoint === `${repo}/actions/runs/${run.id}` ||
+  endpoint?.startsWith(`${repo}/actions/runs/${run.id}/attempts/1/jobs?`))
 
 if (endpoint === repo) {
   if (state.authRequired && !oneOffToken) {
@@ -135,6 +154,13 @@ if (endpoint === repo) {
       content: Buffer.from(`class SqlNotSoLite < Formula\n  version "${version}"\nend\n`).toString('base64') })
   }
 } else if (endpoint?.startsWith(`${repo}/actions/workflows/42/runs?`)) {
+  state.runLists = (state.runLists ?? 0) + 1
+  if (state.previousRerunBeforePush && state.runLists > 1 && !remoteTag()) state.previousRuns[0].run_attempt = 2
+  if (state.previousRerunAfterPush && remoteTag()) state.previousRuns[0].run_attempt = 2
+  if (state.previousAddedBeforePush && state.runLists > 1 && !remoteTag() && !state.previousAdded) {
+    state.previousRuns.push({ id: 110 })
+    state.previousAdded = true
+  }
   if (!remoteTag() && !state.registered && state.imageAfterPreflight) state.existingImage = true
   if (!remoteTag() && !state.registered && state.draftAfterPreflight) {
     state.foreignRelease = true
@@ -148,13 +174,26 @@ if (endpoint === repo) {
     state.polls = (state.polls ?? 0) + 1
     if (!state.neverRegisters && state.polls > (state.registrationDelay ?? 0)) state.registered = true
   }
-  const runs = state.registered || state.historicalRun ? [run()] : []
-  if (state.concurrentRun && state.registered) runs.push({ ...run(), id: 124 })
+  const runs = [...previousRuns(), ...(state.registered ? [run()] : [])]
+  if (state.concurrentRun && state.registered) runs.push({ ...run(), id: runId + 1 })
   runs.push({ id: 999, workflow_id: 42, event: 'push', run_attempt: 1,
     path: '.github/workflows/release.yml', head_branch: 'v99.0.0', head_sha: 'f'.repeat(40),
     status: 'completed', conclusion: 'failure' })
   finish({ workflow_runs: runs })
-} else if (endpoint === `${repo}/actions/runs/123`) {
+} else if (previousRun && endpoint === `${repo}/actions/runs/${previousRun.id}`) {
+  if (state.previousRerunOnRead) previousRun.run_attempt = 2
+  finish(previousRun)
+} else if (previousRun) {
+  if (previousRun.jobsFailure) finish(null, 503)
+  else finish({ jobs: [
+    { id: 4, name: 'Publish release and multiarch image', status: 'completed',
+      conclusion: previousRun.publicationStarted ? 'failure' : 'skipped' },
+    ...(!previousRun.missingJobs ? [
+      { id: 5, name: 'Update Homebrew tap', status: 'completed',
+        conclusion: previousRun.homebrewPublished ? 'success' : 'skipped' },
+    ] : []),
+  ] })
+} else if (endpoint === `${repo}/actions/runs/${runId}`) {
   if (state.changeRemote && !state.changedRemote) {
     git('--git-dir', state.remote, 'update-ref', ref, state.commit)
     state.changedRemote = true
@@ -165,13 +204,13 @@ if (endpoint === repo) {
   }
   if (state.rerunOnRead) state.rerun = true
   finish(run())
-} else if (endpoint === `${repo}/actions/runs/123/cancel` && method === 'POST') {
+} else if (endpoint === `${repo}/actions/runs/${runId}/cancel` && method === 'POST') {
   if (state.scenario === 'cancel-failure') finish(null, 403)
   else {
     state.cancelled = true
     finish(undefined, state.scenario === 'cancel-race' ? 409 : 202)
   }
-} else if (endpoint?.startsWith(`${repo}/actions/runs/123/attempts/1/jobs?`)) {
+} else if (endpoint?.startsWith(`${repo}/actions/runs/${runId}/attempts/1/jobs?`)) {
   if (state.jobsFailure) finish(null, 403)
   else {
     const publication = state.published || state.publicationStarted
