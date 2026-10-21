@@ -63,6 +63,32 @@ The contract and generated Go files live under [`api/proto/`](../api/proto/). Re
 
 ## Architecture
 
+The daemon connects application clients, the embedded web UI, filesystem discovery, and local database copies:
+
+```text
+┌──────────┐  gRPC   ┌─────────────────┐    ┌────────────────┐
+│  App A   │────────▶│                 │───▶│ app_a.sqlite   │
+└──────────┘         │ sql-not-so-lite │    ├────────────────┤
+┌──────────┐  gRPC   │    daemon       │───▶│ app_b.sqlite   │
+│  App B   │────────▶│                 │    └────────────────┘
+└──────────┘         │ :50051 (gRPC)   │    ~/.sql-not-so-lite/
+                     │ :9147  (HTTP)   │         databases/
+┌──────────┐  HTTP   │                 │
+│  Web GUI │────────▶│                 │    ┌────────────────┐
+└──────────┘         │   ┌──────────┐  │───▶│ catalog.sqlite │
+                     │   │ scanner  │  │    └────────────────┘
+  ~/                 │   │ catalog  │  │    ┌────────────────┐
+  ├── .docker/       │   │ replica- │  │───▶│   replicas/    │
+  ├── workspace/     │   │   tor    │  │    │   snapshots/   │
+  ├── app-data/  ◀───│   │ schema   │  │    └────────────────┘
+  └── .../*.sqlite   │   └──────────┘  │    ~/.sql-not-so-lite/
+                     └─────────────────┘
+```
+
+Paths are schematic: `catalog.sqlite` shares `server.data_dir` with managed databases, defaulting to `~/.sql-not-so-lite/databases/`. Replicas and snapshots use their separately configured directories. See [storage configuration](configuration.md#server-and-storage).
+
+### Components
+
 | Component | Responsibility |
 |-----------|----------------|
 | [`cmd/sqnsl`](../cmd/sqnsl/) | Cobra commands and native user-service integration |

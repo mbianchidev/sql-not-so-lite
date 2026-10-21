@@ -15,7 +15,7 @@ The daemon distinguishes writable **managed databases** from read-only inspectio
 
 ## Developing and releasing
 
-- [Developer guide](development.md): setup, hot reload, architecture, checks, and contributing.
+- [Developer guide](development.md): setup, hot reload, [architecture diagram](development.md#architecture), checks, and contributing.
 - [Installation and release operations](releases.md): configured distribution artifacts, upgrades, CI policy, publication, credentials, retries, and recovery.
 - [Protobuf contract](../api/proto/sqnsl.proto): service definitions and message types.
 - [Build targets](../Makefile): the commands used by local development and CI.

@@ -68,7 +68,7 @@ Follow the [configuration reference](docs/configuration.md) for storage paths, s
 ## Documentation
 
 - [User guides and reference index](docs/README.md)
-- [Developer setup, architecture, and checks](docs/development.md)
+- [Architecture diagram](docs/development.md#architecture) and [developer setup/checks](docs/development.md)
 - [Installation packages and release operations](docs/releases.md)
 
 ## AI policy
