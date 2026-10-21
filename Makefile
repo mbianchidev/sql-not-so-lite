@@ -60,7 +60,8 @@ docker-build:
 	docker build --build-arg VERSION=$(VERSION) -t sql-not-so-lite:$(VERSION) -f deploy/docker/Dockerfile --no-cache .
 
 release-snapshot:
-	goreleaser release --snapshot --clean --fail-on-warnings
+	goreleaser check
+	goreleaser release --snapshot --clean
 	node scripts/verify-release.mjs dist --docker
 	bash scripts/test-packages.sh dist
 
