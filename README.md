@@ -384,7 +384,9 @@ it prompts for a hidden token used only for this invocation, without changing
 the saved `gh` login.
 
 Failures before publication cancel/wait for the workflow and remove only
-invocation-owned tags. Once publication may have started, the script retains
+invocation-owned tags. The same version can be retried when earlier runs
+provably stopped before publication; their IDs are excluded when tracking
+the new run. Once publication may have started, the script retains
 the tag and published resources, exits with an incomplete-recovery status,
 and records prior/current GitHub, GHCR, and Homebrew state for explicit recovery.
 See [release prerequisites, rollback, and recovery](docs/releases.md#publishing).
