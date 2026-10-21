@@ -28,7 +28,7 @@ proto:
 
 # Build GUI
 gui:
-	cd $(WEB_DIR) && npm ci && npm run build
+	bash scripts/build-gui.sh
 
 # Dev mode: run GUI dev server (proxy to Go backend)
 dev-gui:

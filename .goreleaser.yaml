@@ -3,8 +3,7 @@ project_name: sql-not-so-lite
 
 before:
   hooks:
-    - npm --prefix web ci
-    - npm --prefix web run build
+    - bash scripts/build-gui.sh
 
 builds:
   - id: sqnsl

@@ -103,10 +103,13 @@ lightweight checks. Superseded PR runs are canceled, but release runs are not.
 skipped distribution checks for drafts.
 
 The frontend is built once per workflow revision and passed as a SHA-named
-artifact to snapshot packaging and release publication. These consumers use
-`--skip=before` because the GoReleaser before hooks only build the frontend.
-Local snapshot builds still run those hooks. Production binaries are rebuilt
-with the stable version rather than publishing snapshot-versioned binaries.
+artifact to snapshot packaging and release publication. Consumers download it
+outside the checkout, then the shared GUI build hook stages it after GoReleaser's
+clean-Git validation. This preserves release validation without rebuilding the
+frontend or making the checkout dirty before validation. Local builds use the
+same hook to install locked frontend dependencies and build from source.
+Production binaries are rebuilt with the stable version rather than publishing
+snapshot-versioned binaries.
 
 Cross-compilation uses a separate Go setup-cache fingerprint from the native
 Go job, so a native-only cache cannot prevent the cross-target cache from being
