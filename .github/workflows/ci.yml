@@ -3,6 +3,10 @@ name: CI
 on:
   pull_request:
     branches: [main]
+  workflow_call:
+
+permissions:
+  contents: read
 
 jobs:
   go:
@@ -44,3 +48,80 @@ jobs:
 
       - name: Build
         run: npm run build
+
+  packages:
+    name: Release packaging
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v6
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Test formula generation
+        run: node --test scripts/homebrew.test.mjs
+
+      - uses: goreleaser/goreleaser-action@a4f02ab5355a589de60d917a659ce617ed19b3de # v7.3.0
+        with:
+          version: v2.18.3
+          args: release --snapshot --clean --fail-on-warnings
+
+      - name: Verify archives, checksums, embedded GUI, and container
+        run: node scripts/verify-release.mjs dist --docker
+
+      - name: Install and remove Debian and RPM packages
+        run: bash scripts/test-packages.sh dist
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-snapshot
+          retention-days: 3
+          path: |
+            dist/*.tar.gz
+            dist/*.deb
+            dist/*.rpm
+            dist/checksums.txt
+            dist/metadata.json
+            dist/sql-not-so-lite.rb
+
+  native-packages:
+    name: Native release (${{ matrix.runner }})
+    needs: packages
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04-arm, macos-15-intel, macos-latest]
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v6
+        with:
+          node-version: 22
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-snapshot
+          path: dist
+
+      - name: Verify native CLI, API, embedded GUI, and checksums
+        run: node scripts/verify-release.mjs dist
+
+      - name: Install and remove ARM64 Debian and RPM packages
+        if: runner.os == 'Linux'
+        run: bash scripts/test-packages.sh dist
+
+      - name: Validate Homebrew formula syntax
+        if: runner.os == 'macOS'
+        run: ruby -c dist/sql-not-so-lite.rb

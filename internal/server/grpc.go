@@ -14,7 +14,7 @@ import (
 	"google.golang.org/grpc/reflection"
 )
 
-const Version = "0.1.0"
+var Version = "dev"
 
 type GRPCServer struct {
 	pb.UnimplementedSqlNotSoLiteServer

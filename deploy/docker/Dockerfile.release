@@ -1,0 +1,14 @@
+FROM --platform=$BUILDPLATFORM alpine:3.24 AS certificates
+RUN apk add --no-cache ca-certificates
+
+FROM alpine:3.24
+ARG TARGETPLATFORM
+COPY --from=certificates /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
+COPY ${TARGETPLATFORM}/sqnsl /usr/local/bin/sqnsl
+
+ENV HOME=/data SQNSL_DATA_DIR=/data SQNSL_SCAN_ROOT=/data
+WORKDIR /data
+EXPOSE 50051 9147
+VOLUME ["/data"]
+ENTRYPOINT ["sqnsl"]
+CMD ["start"]

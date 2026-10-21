@@ -13,14 +13,16 @@ COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 COPY --from=gui-builder /app/internal/server/static ./internal/server/static
-RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o /sqnsl ./cmd/sqnsl/
+ARG VERSION=dev
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X github.com/mbianchidev/sql-not-so-lite/internal/server.Version=${VERSION}" -o /sqnsl ./cmd/sqnsl/
 
-FROM alpine:3.20
+FROM alpine:3.24
 RUN apk add --no-cache ca-certificates
 COPY --from=go-builder /sqnsl /usr/local/bin/sqnsl
 
 RUN mkdir -p /data
-ENV SQNSL_DATA_DIR=/data
+ENV HOME=/data SQNSL_DATA_DIR=/data SQNSL_SCAN_ROOT=/data
+WORKDIR /data
 
 EXPOSE 50051 9147
 VOLUME ["/data"]
