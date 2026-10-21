@@ -366,9 +366,26 @@ make dev-gui
 # Run tests
 make test
 
+# Test release automation without publishing anything
+make test-release
+
 # Regenerate protobuf (after editing sqnsl.proto)
 make proto
 ```
+
+## Publishing a release
+
+From a clean checkout of current `origin/main`, run `./.release.sh 0.0.3`
+(`v0.0.3` is equivalent). The script advances the product version by creating
+and pushing its canonical annotated tag, then follows that exact Release
+workflow, including full CI. It does not edit the private frontend's version
+or push a commit to `main`.
+
+Failures before publication cancel/wait for the workflow and remove only
+invocation-owned tags. Once publication may have started, the script retains
+the tag and published resources, exits with an incomplete-recovery status,
+and records prior/current GitHub, GHCR, and Homebrew state for explicit recovery.
+See [release prerequisites, rollback, and recovery](docs/releases.md#publishing).
 
 ## License
 
