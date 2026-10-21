@@ -97,4 +97,4 @@ Contributors remain responsible for all submitted work, including AI-assisted co
 
 [`release.sh`](../release.sh) delegates to the existing release automation; it is a real publication command, not a local test. Use `./release.sh --help` for safe usage inspection.
 
-Read the [release guide](releases.md#publishing) for clean-main requirements, version selection, hidden one-off credentials, safe retries of unpublished versions, exact-run monitoring, and recovery. Documentation checks do not require creating tags, publishing releases, pushing images, or changing saved authentication.
+Read the [release guide](releases.md#publishing) for clean-checkout requirements, automatic fast-forward updates of `main`, version selection, hidden one-off credentials, safe retries of unpublished versions, exact-run monitoring, and recovery. Documentation checks do not require creating tags, publishing releases, pushing images, or changing saved authentication.
