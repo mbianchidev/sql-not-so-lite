@@ -136,30 +136,51 @@ After changes have been reviewed and merged, use a clean checkout of current
 `origin/main` and a new stable version:
 
 ```bash
-./.release.sh 0.0.3  # v0.0.3 is equivalent
+./release.sh 0.0.3  # v0.0.3 is equivalent
 ```
 
-This is a real publication command, not a dry run. `./.release.sh --help` is
+This is a real publication command, not a dry run. `./release.sh --help` is
 safe and prints usage. The executable shell entry point delegates to
 `scripts/release.mjs`, using the same Node.js runtime as the other release tools.
 
 ### Prerequisites and version bump
 
-Requires Git, Node.js 22+, and a recent authenticated GitHub CLI (`gh`). The
+Requires Git, Node.js 22+, and a recent GitHub CLI (`gh`). The
 operator needs source-repository push access, Actions write access for
 cancellation, read access to the tap, and GHCR `read:packages` access. Git
-authentication and a Git committer identity must already work. The script
-does not log in, request new credentials, install tools, or change Git config.
-For a classic GitHub CLI token, grant package inventory access separately:
+authentication and a Git committer identity must already work.
 
-```bash
-gh auth refresh --hostname github.com --scopes read:packages
-```
+The script first uses the existing `gh` credentials. If login is missing or a
+preflight API returns HTTP 401/403, an interactive terminal prompts for a
+**hidden, one-off token**. Supply a classic personal access token with `repo`
+and `read:packages` access. The script retries the entire GitHub preflight once
+with that token, checking repository permissions and publication state again.
+An invalid or insufficient token fails before creating a tag; it never falls
+back to an empty registry.
+
+The prompted token stays in process memory and overrides `GH_TOKEN` and
+`GITHUB_TOKEN` only for this invocation's `gh` subprocesses, including rollback.
+It is not echoed or included in command arguments, Git config, recovery journals,
+or saved `gh` authentication. The script never runs `gh auth login` or
+`gh auth refresh`, changes the parent shell environment, or passes this token
+to Git. It does not install tools or change Git config. "One-off" describes
+the script's use, not GitHub token validity: the script does not create or
+revoke the token, whose configured expiry still applies.
+
+Blank input, invalid whitespace, EOF, Ctrl-C, or the command timeout stops
+token entry without tagging. Noninteractive runs cannot prompt and fail
+explicitly; supply an already-authorized `GH_TOKEN` before starting unattended
+publication. No further token prompts occur after the initial preflight.
 
 The package inventory is required even before the first packaged release.
 Listing accessible packages successfully distinguishes an absent package
 from a package hidden by insufficient permissions. An authorization/network
 failure is not treated as an empty registry.
+
+`make test-release` exercises authentication with synthetic tokens and real
+pseudo-terminals. These tests additionally require Python 3.9+ and its
+standard-library `pty` module on macOS or Linux. Running a release does not
+require Python.
 
 The script requires a clean checkout whose `HEAD` equals the advertised
 `origin/main` commit. It does not switch branches, fetch into local branches,
@@ -245,7 +266,7 @@ most one day):
 |----------------------|---------|-------|
 | `SQNSL_RELEASE_TIMEOUT_SECONDS` | `7200` | Workflow/publication monitoring after tag push |
 | `SQNSL_RELEASE_ROLLBACK_TIMEOUT_SECONDS` | `300` | Entire rollback attempt |
-| `SQNSL_RELEASE_COMMAND_TIMEOUT_SECONDS` | `60` | Each Git/gh subprocess, capped by an active deadline |
+| `SQNSL_RELEASE_COMMAND_TIMEOUT_SECONDS` | `60` | Each Git/gh subprocess (capped by an active deadline) and one-off token entry |
 | `SQNSL_RELEASE_POLL_SECONDS` | `10` | Maximum delay between polls |
 
 Initial workflow registration is additionally bounded to three minutes.

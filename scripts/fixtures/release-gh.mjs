@@ -4,6 +4,7 @@ import { readFileSync, writeFileSync } from 'node:fs'
 
 const path = process.env.SQNSL_RELEASE_MOCK_STATE
 const state = JSON.parse(readFileSync(path, 'utf8'))
+const oneOffToken = process.env.GH_TOKEN === 'mock-one-off-release-token'
 const args = process.argv.slice(2)
 if (args.shift() !== 'api') throw new Error('Only mocked gh api calls are allowed')
 let method = 'GET'
@@ -37,11 +38,13 @@ function remoteTag() {
     return null
   }
 }
-state.calls.push({ method, endpoint, remoteTag: remoteTag() })
+state.calls.push({ method, endpoint, remoteTag: remoteTag(), oneOffToken,
+  githubTokenPresent: process.env.GITHUB_TOKEN !== undefined })
 function finish(body, status = 200) {
   writeFileSync(path, JSON.stringify(state))
   if (status >= 400) {
     console.error(`gh: Mock API failure (HTTP ${status})`)
+    if (state.echoRejectedToken && process.env.GH_TOKEN) console.error(`Mock rejected credential: ${process.env.GH_TOKEN}`)
     console.log(JSON.stringify({ message: 'Mock API failure', status: String(status) }))
     process.exit(1)
   }
@@ -85,12 +88,18 @@ function run() {
 }
 
 if (endpoint === repo) {
+  if (state.authRequired && !oneOffToken) {
+    writeFileSync(path, JSON.stringify(state))
+    console.error('gh: Authentication required')
+    process.exit(4)
+  }
+  if (state.authStatus && !oneOffToken) finish(null, state.authStatus)
   if (state.hangAPI) {
     writeFileSync(path, JSON.stringify(state))
     await new Promise(resolve => setTimeout(resolve, 120_000))
   }
   finish({ full_name: 'mbianchidev/sql-not-so-lite', default_branch: 'main',
-    archived: false, permissions: { push: !state.readOnly } })
+    archived: false, permissions: { push: !state.readOnly && !(oneOffToken && state.oneOffReadOnly) } })
 } else if (endpoint === `${repo}/actions/workflows/release.yml`) {
   finish({ id: 42, path: '.github/workflows/release.yml', state: state.disabled ? 'disabled_manually' : 'active' })
 } else if (endpoint?.startsWith(`${repo}/releases?`)) {
@@ -99,7 +108,8 @@ if (endpoint === repo) {
   if ((state.published || state.foreignRelease) && !state.draftRelease) finish(release())
   else finish(null, 404)
 } else if (endpoint?.startsWith(`${packages}?`)) {
-  if (state.noPackageAccess) finish(null, 403)
+  if (state.packageStatus) finish(null, state.packageStatus)
+  else if (state.noPackageAccess && !oneOffToken) finish(null, 403)
   else finish(state.firstRelease && !state.published ? [] : [{
     name: 'sql-not-so-lite',
     repository: { full_name: 'mbianchidev/sql-not-so-lite' },

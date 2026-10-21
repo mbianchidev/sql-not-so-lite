@@ -398,6 +398,8 @@ make proto
 
 Maintainers can use [`./release.sh`](release.sh) with a new `X.Y.Z` or `vX.Y.Z` version from a clean checkout of current `origin/main`. This publishes a real annotated tag and follows the Release workflow; it does not edit the private frontend's version or push a commit to `main`. `./release.sh --help` is safe to inspect without publishing.
 
+If GitHub authentication is missing or lacks access, an interactive terminal prompts for a hidden token used only for this invocation, without changing the saved `gh` login.
+
 Read the [release prerequisites, rollback, and recovery procedure](docs/releases.md#publishing) first. Failures before publication can remove invocation-owned tags; once publication may have started, resources are retained for explicit recovery.
 
 ## Documentation and contributing

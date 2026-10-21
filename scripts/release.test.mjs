@@ -19,7 +19,9 @@ function fixture(t, options = {}) {
   mkdirSync(join(root, 'scripts'))
   mkdirSync(join(root, 'web'))
   const env = {
-    ...Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith('GIT_'))),
+    ...Object.fromEntries(Object.entries(process.env).filter(([name]) =>
+      !name.startsWith('GIT_') && !['GH_TOKEN', 'GITHUB_TOKEN'].includes(name),
+    )),
     GIT_CONFIG_NOSYSTEM: '1',
     GIT_CONFIG_GLOBAL: '/dev/null',
     GIT_TERMINAL_PROMPT: '0',
@@ -41,10 +43,10 @@ function fixture(t, options = {}) {
   git('config', 'user.email', 'release-test@example.invalid')
   git('config', 'url.' + `file://${remote}` + '.insteadOf', 'git@github.com:mbianchidev/sql-not-so-lite.git')
   git('remote', 'add', 'origin', 'git@github.com:mbianchidev/sql-not-so-lite.git')
-  for (const name of ['.release.sh', 'scripts/release.mjs']) {
+  for (const name of ['release.sh', 'scripts/release.mjs']) {
     if (existsSync(join(source, name))) copyFileSync(join(source, name), join(root, name))
   }
-  if (existsSync(join(root, '.release.sh'))) chmodSync(join(root, '.release.sh'), 0o755)
+  if (existsSync(join(root, 'release.sh'))) chmodSync(join(root, 'release.sh'), 0o755)
   copyFileSync(join(source, 'scripts/fixtures/release-gh.mjs'), join(bin, 'gh'))
   chmodSync(join(bin, 'gh'), 0o755)
   writeFileSync(join(root, 'web/package.json'), '{"name":"web","private":true,"version":"0.0.0"}\n')
@@ -64,15 +66,25 @@ function fixture(t, options = {}) {
       JSON.parse(readFileSync(join(dir, name), 'utf8')),
     ) : []
   }
-  async function release(args = [tag], { signalOn, signal = 'SIGINT', extraEnv = {} } = {}) {
-    const child = spawn('bash', ['.release.sh', ...args], { cwd: root, env: { ...env, ...extraEnv } })
+  async function release(args = [tag], { signalOn, signal = 'SIGINT', extraEnv = {}, tokenInput } = {}) {
+    const command = ['bash', 'release.sh', ...args]
+    const terminal = tokenInput !== undefined
+    const child = spawn(terminal ? 'python3' : command[0], terminal ?
+      ['-c', 'import os, pty, sys; sys.exit(os.waitstatus_to_exitcode(pty.spawn(sys.argv[1:])))', ...command] :
+      command.slice(1), { cwd: root, env: { ...env, ...extraEnv } })
     let output = ''
     let signalled = false
+    let tokenSent = false
     const capture = data => {
       output += data
+      if (terminal && !tokenSent && output.includes('One-off GitHub token (hidden, this run only): ')) {
+        tokenSent = true
+        child.stdin.write(tokenInput)
+      }
       if (signalOn && !signalled && output.includes(signalOn)) {
         signalled = true
-        child.kill(signal)
+        if (terminal && signal === 'SIGINT') child.stdin.write('\x03')
+        else child.kill(signal)
       }
     }
     child.stdout.on('data', capture)
@@ -100,7 +112,7 @@ test('normalizes stable product versions with or without a v prefix', async () =
 })
 
 test('the root release entry point is executable', () => {
-  assert.ok(statSync(join(source, '.release.sh')).mode & 0o111)
+  assert.ok(statSync(join(source, 'release.sh')).mode & 0o111)
 })
 
 test('publishes a normalized annotated tag on main without bumping unrelated files', async t => {
@@ -120,6 +132,115 @@ test('publishes a normalized annotated tag on main without bumping unrelated fil
   assert.ok(f.readState().calls.some(call => call.endpoint.includes('/actions/runs/123')))
   assert.ok(!f.readState().calls.some(call => call.method === 'POST' || call.method === 'DELETE'))
   assert.ok(!existsSync(join(f.root, '.git/sqnsl-release.lock')))
+})
+
+test('a hidden one-off token overrides environment credentials for gh only without saving or echoing it', async t => {
+  const f = fixture(t, { noPackageAccess: true })
+  const token = 'mock-one-off-release-token'
+  const hook = join(f.root, '.git/hooks/pre-push')
+  writeFileSync(hook, '#!/bin/sh\n' +
+    'if [ "$GH_TOKEN" != "mock-inherited-token" ] || [ "$GITHUB_TOKEN" != "mock-inherited-github-token" ]; then\n' +
+    '  echo "One-off credentials leaked to Git" >&2\n  exit 1\nfi\n')
+  chmodSync(hook, 0o755)
+  const result = await f.release(undefined, {
+    tokenInput: `${token}\n`,
+    extraEnv: { GH_TOKEN: 'mock-inherited-token', GITHUB_TOKEN: 'mock-inherited-github-token' },
+  })
+  assert.equal(result.code, 0, result.output)
+  assert.equal(result.output.match(/One-off GitHub token \(hidden, this run only\): /g)?.length, 1)
+  assert.ok(!result.output.includes(token), result.output)
+  const calls = f.readState().calls
+  const authenticated = calls.findIndex(call => call.oneOffToken)
+  assert.ok(authenticated > 0)
+  assert.equal(calls[authenticated].endpoint, 'repos/mbianchidev/sql-not-so-lite')
+  assert.ok(calls.slice(authenticated).every(call => call.oneOffToken && !call.githubTokenPresent))
+  assert.ok(!JSON.stringify(f.journals()).includes(token))
+  assert.ok(!readFileSync(join(f.root, '.git/config'), 'utf8').includes(token))
+  assert.equal(f.journals()[0].outcome, 'released')
+  assert.equal(f.git('status', '--porcelain'), '')
+})
+
+test('a one-off token also works without a saved gh login', async t => {
+  const f = fixture(t, { authRequired: true })
+  const result = await f.release(undefined, { tokenInput: 'mock-one-off-release-token\n' })
+  assert.equal(result.code, 0, result.output)
+  assert.equal(f.journals()[0].outcome, 'released')
+  assert.ok(!result.output.includes('mock-one-off-release-token'))
+})
+
+for (const status of [401, 403]) {
+  test(`a GitHub HTTP ${status} prompts once and repeats repository authorization with the one-off token`, async t => {
+    const f = fixture(t, { authStatus: status })
+    const result = await f.release(undefined, { tokenInput: 'mock-one-off-release-token\n' })
+    assert.equal(result.code, 0, result.output)
+    assert.equal(f.readState().calls[1].endpoint, 'repos/mbianchidev/sql-not-so-lite')
+    assert.equal(f.readState().calls[1].oneOffToken, true)
+  })
+}
+
+for (const [name, input, code, message] of [
+  ['blank input', '\n', 1, /nonempty GitHub token/],
+  ['whitespace in input', 'mock invalid token\n', 1, /without whitespace/],
+  ['EOF', '\x04', 1, /Token entry cancelled/],
+  ['Ctrl-C', '\x03', 130, /Interrupted by SIGINT/],
+  ['a timeout', '', 1, /Timed out waiting for the one-off GitHub token/],
+]) {
+  test(`one-off token entry stops safely on ${name}`, async t => {
+    const f = fixture(t, { noPackageAccess: true })
+    const result = await f.release(undefined, {
+      tokenInput: input,
+      extraEnv: { SQNSL_RELEASE_COMMAND_TIMEOUT_SECONDS: '0.7' },
+    })
+    assert.equal(result.code, code, result.output)
+    assert.match(result.output, message)
+    assert.equal(f.git('ls-remote', '--refs', 'origin', 'refs/tags/v1.2.3'), '')
+    assert.ok(!f.readState().calls.some(call => call.method !== 'GET'))
+    assert.equal(f.journals()[0].outcome, 'preflight-failed')
+    assert.ok(!existsSync(join(f.root, '.git/sqnsl-release.lock')))
+  })
+}
+
+test('a rejected one-off token is not retried or exposed in errors and recovery journals', async t => {
+  const f = fixture(t, { noPackageAccess: true, echoRejectedToken: true })
+  const token = 'mock-rejected-release-token'
+  const result = await f.release(undefined, { tokenInput: `${token}\n` })
+  assert.equal(result.code, 1, result.output)
+  assert.equal(result.output.match(/One-off GitHub token \(hidden, this run only\): /g)?.length, 1)
+  assert.ok(!result.output.includes(token), result.output)
+  assert.match(result.output, /\[REDACTED\]/)
+  assert.ok(!JSON.stringify(f.journals()).includes(token))
+  assert.equal(f.git('ls-remote', '--refs', 'origin', 'refs/tags/v1.2.3'), '')
+})
+
+test('a one-off token without source-repository push access cannot publish', async t => {
+  const f = fixture(t, { noPackageAccess: true, oneOffReadOnly: true })
+  const result = await f.release(undefined, { tokenInput: 'mock-one-off-release-token\n' })
+  assert.equal(result.code, 1, result.output)
+  assert.match(result.output, /Need push access/)
+  assert.equal(f.git('ls-remote', '--refs', 'origin', 'refs/tags/v1.2.3'), '')
+})
+
+test('package service failures never prompt for credentials or proceed with an empty registry', async t => {
+  const f = fixture(t, { packageStatus: 503 })
+  const result = await f.release(undefined, { tokenInput: '' })
+  assert.equal(result.code, 1, result.output)
+  assert.match(result.output, /Cannot inventory GHCR safely.*connectivity/)
+  assert.doesNotMatch(result.output, /One-off GitHub token \(hidden/)
+  assert.equal(f.git('ls-remote', '--refs', 'origin', 'refs/tags/v1.2.3'), '')
+})
+
+test('the one-off token remains available for cancellation and rollback without another prompt', async t => {
+  const f = fixture(t, { noPackageAccess: true, scenario: 'running' })
+  const result = await f.release(undefined, {
+    tokenInput: 'mock-one-off-release-token\n',
+    signalOn: 'in_progress/pending',
+  })
+  assert.equal(result.code, 130, result.output)
+  assert.match(result.output, /Rollback complete/)
+  assert.equal(result.output.match(/One-off GitHub token \(hidden, this run only\): /g)?.length, 1)
+  const cancellation = f.readState().calls.find(call => call.method === 'POST')
+  assert.equal(cancellation?.oneOffToken, true)
+  assert.equal(f.git('ls-remote', '--refs', 'origin', 'refs/tags/v1.2.3'), '')
 })
 
 test('failed CI rolls back only owned tags after proving publication was skipped', async t => {

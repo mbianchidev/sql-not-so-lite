@@ -2,6 +2,8 @@ import { execFile } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmdirSync, unlinkSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
+import { createInterface } from 'node:readline'
+import { Writable } from 'node:stream'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { promisify } from 'node:util'
@@ -12,10 +14,12 @@ const tap = 'mbianchidev/homebrew-tap'
 const repoAPI = `repos/${repository}`
 const stableVersion = /^v?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/
 const hash = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/
-const usage = `Usage: ./.release.sh X.Y.Z | vX.Y.Z
+const usage = `Usage: ./release.sh X.Y.Z | vX.Y.Z
 
 Run from a clean checkout of current origin/main. Requires Node.js 22+, Git,
-and authenticated gh with repository push/Actions access and read:packages.
+and gh with repository push/Actions access and read:packages.
+If authentication is missing or denied, prompts for a hidden, one-off token.
+The token is not saved and does not change gh login or environment credentials.
 The version bump is a new annotated tag, not a source or frontend version edit.
 No main-branch commits are created or pushed.
 
@@ -81,15 +85,63 @@ class Release {
     renameSync(`${this.journal}.tmp`, this.journal)
   }
 
+  redact(value) {
+    return this.token ? value.replaceAll(this.token, '[REDACTED]') : value
+  }
+
+  async promptForToken() {
+    if (!process.stdin.isTTY || !process.stderr.isTTY) {
+      throw new Error('Cannot prompt for a one-off GitHub token without an interactive terminal. ' +
+        'Run ./release.sh in a terminal, or supply GH_TOKEN with repository/Actions access and read:packages.')
+    }
+    this.abort.signal.throwIfAborted()
+    console.error('Provide a token with repository/Actions access and read:packages; it will not be saved.')
+    return new Promise((resolve, reject) => {
+      const terminal = createInterface({ input: process.stdin, terminal: true, historySize: 0,
+        output: new Writable({ write(chunk, encoding, callback) { callback() } }) })
+      let settled = false
+      const finish = (error, token) => {
+        if (settled) return
+        settled = true
+        clearTimeout(timer)
+        this.abort.signal.removeEventListener('abort', onAbort)
+        terminal.close()
+        process.stderr.write('\n')
+        if (error) reject(error)
+        else resolve(token)
+      }
+      const onAbort = () => finish(this.abort.signal.reason)
+      const timer = setTimeout(() => finish(new Error('Timed out waiting for the one-off GitHub token.')),
+        this.config.command)
+      this.abort.signal.addEventListener('abort', onAbort, { once: true })
+      terminal.once('SIGINT', this.handlers.get('SIGINT'))
+      terminal.once('error', error => finish(new Error('Cannot read the one-off GitHub token.', { cause: error })))
+      terminal.once('close', () => finish(new Error('Token entry cancelled before a token was submitted.')))
+      terminal.once('line', token => {
+        if (!/^[\x21-\x7e]+$/.test(token)) {
+          finish(new Error('A nonempty GitHub token without whitespace or control characters is required.'))
+        } else {
+          finish(null, token)
+        }
+      })
+      process.stderr.write('One-off GitHub token (hidden, this run only): ')
+    })
+  }
+
   async command(program, args, { input, allow = [] } = {}) {
     if (!this.cleaning && this.abort.signal.aborted) throw this.abort.signal.reason
     const deadline = this.cleaning ? this.cleanupDeadline : this.deadline
     const remaining = deadline === undefined ? this.config.command : deadline - Date.now()
     if (remaining <= 0) throw new Error(`${this.cleaning ? 'Rollback' : 'Release'} deadline exceeded`)
+    const env = { ...process.env, GIT_TERMINAL_PROMPT: '0', GH_PROMPT_DISABLED: '1', GH_PAGER: 'cat', GIT_PAGER: 'cat' }
+    if (program === 'gh' && this.token) {
+      env.GH_TOKEN = this.token
+      delete env.GITHUB_TOKEN
+    }
     try {
       const promise = exec(program, args, {
         cwd: this.root,
-        env: { ...process.env, GIT_TERMINAL_PROMPT: '0', GH_PROMPT_DISABLED: '1', GH_PAGER: 'cat', GIT_PAGER: 'cat' },
+        env,
         encoding: 'utf8',
         timeout: Math.max(1, Math.min(this.config.command, remaining)),
         killSignal: 'SIGKILL',
@@ -106,7 +158,7 @@ class Release {
       return stdout.trim()
     } catch (cause) {
       if (allow.includes(cause.code)) return (cause.stdout ?? '').trim()
-      const detail = (cause.stderr || cause.stdout || cause.message).trim()
+      const detail = this.redact((cause.stderr || cause.stdout || cause.message).trim())
       const error = new Error(`${program} ${args.join(' ')} failed${cause.killed ? ' (timed out)' : ''}:\n${detail}`, { cause })
       error.status = Number(/\(HTTP (\d+)\)/.exec(detail)?.[1] ?? 0)
       throw error
@@ -191,8 +243,7 @@ class Release {
       packages = await this.items('users/mbianchidev/packages?package_type=container&per_page=100')
     } catch (cause) {
       throw new Error(cause.status === 401 || cause.status === 403 ?
-        'Cannot inventory GHCR safely. The gh token needs read:packages. ' +
-        'For a classic token: gh auth refresh --hostname github.com --scopes read:packages' :
+        'Cannot inventory GHCR safely. The gh token needs read:packages.' :
         'Cannot inventory GHCR safely. Check GitHub connectivity and package access.', { cause })
     }
     const pkg = packages.find(pkg => pkg.name === 'sql-not-so-lite')
@@ -314,6 +365,18 @@ class Release {
     await this.checkRemote()
     for (const tag of (await this.git('tag', '--list')).split('\n')) this.requireNewer(tag, 'local tags')
     this.committer = await this.git('var', 'GIT_COMMITTER_IDENT')
+    try {
+      await this.githubPreflight()
+    } catch (error) {
+      if (![401, 403].includes(error.status ?? error.cause?.status) && error.cause?.code !== 4) throw error
+      console.error(error.message)
+      this.token = await this.promptForToken()
+      await this.githubPreflight()
+    }
+    this.save()
+  }
+
+  async githubPreflight() {
     const repo = await this.api(repoAPI)
     if (repo.full_name !== repository || repo.default_branch !== 'main' || repo.archived || !repo.permissions?.push) {
       throw new Error('Need push access to the active source repository with main as its default branch.')
@@ -325,7 +388,6 @@ class Release {
     this.state.baseline = await this.snapshot()
     this.requireUnclaimed(this.state.baseline)
     if ((await this.runs()).length) throw new Error(`${this.tag} has historical Release runs. Do not reuse released versions.`)
-    this.save()
   }
 
   async pause(deadline) {
@@ -512,9 +574,9 @@ class Release {
       await this.preflight()
       await this.publish()
     } catch (error) {
-      console.error(error.message)
-      if (error.cause?.message && error.cause.message !== error.message) console.error(error.cause.message)
-      this.state.error = error.message
+      console.error(this.redact(error.message))
+      if (error.cause?.message && error.cause.message !== error.message) console.error(this.redact(error.cause.message))
+      this.state.error = this.redact(error.message)
       code = this.interrupted ? { SIGINT: 130, SIGTERM: 143, SIGHUP: 129 }[this.interrupted] : 1
       if (this.state.localCreationAttempted) {
         try {
@@ -547,6 +609,7 @@ class Release {
         code = 2
       }
       for (const [signal, handler] of this.handlers) process.off(signal, handler)
+      this.token = undefined
     }
     return code
   }
