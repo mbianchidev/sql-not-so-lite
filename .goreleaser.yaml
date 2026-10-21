@@ -1,0 +1,85 @@
+version: 2
+project_name: sql-not-so-lite
+
+before:
+  hooks:
+    - bash scripts/build-gui.sh
+
+builds:
+  - id: sqnsl
+    main: ./cmd/sqnsl
+    binary: sqnsl
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X github.com/mbianchidev/sql-not-so-lite/internal/server.Version={{ .Version }}
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
+archives:
+  - ids: [sqnsl]
+    formats: [tar.gz]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - LICENSE
+      - README.md
+
+nfpms:
+  - ids: [sqnsl]
+    package_name: sql-not-so-lite
+    file_name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    homepage: https://github.com/mbianchidev/sql-not-so-lite
+    maintainer: mbianchidev <mbianchidev@users.noreply.github.com>
+    description: Lightweight SQLite-as-a-service daemon with an embedded web GUI.
+    license: MIT
+    formats: [deb, rpm]
+    bindir: /usr/bin
+    section: database
+    priority: optional
+    mtime: "{{ .CommitDate }}"
+    contents:
+      - src: deploy/systemd/sqnsl.service
+        dst: /usr/lib/systemd/user/sqnsl.service
+      - src: LICENSE
+        dst: /usr/share/doc/sql-not-so-lite/copyright
+      - src: README.md
+        dst: /usr/share/doc/sql-not-so-lite/README.md
+
+checksum:
+  name_template: checksums.txt
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-dev.{{ .ShortCommit }}"
+
+release:
+  github:
+    owner: mbianchidev
+    name: sql-not-so-lite
+  prerelease: auto
+
+dockers_v2:
+  - ids: [sqnsl]
+    dockerfile: deploy/docker/Dockerfile.release
+    images:
+      - ghcr.io/mbianchidev/sql-not-so-lite
+    tags:
+      - "{{ .Version }}"
+      - "{{ if and (not .Prerelease) (not .IsSnapshot) }}latest{{ end }}"
+    platforms:
+      - linux/amd64
+      - linux/arm64
+    flags:
+      - --no-cache
+    labels:
+      org.opencontainers.image.source: https://github.com/mbianchidev/sql-not-so-lite
+      org.opencontainers.image.description: Lightweight SQLite-as-a-service daemon
+      org.opencontainers.image.licenses: MIT
+      org.opencontainers.image.version: "{{ .Version }}"
+      org.opencontainers.image.revision: "{{ .FullCommit }}"

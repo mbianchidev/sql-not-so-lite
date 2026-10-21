@@ -41,6 +41,41 @@ Lightweight SQLite-as-a-service daemon. Manages multiple SQLite databases as fil
 
 ## Quick Start
 
+### Install a release
+
+Releases include the complete web GUI. Go and Node.js are only needed to build from source.
+
+```bash
+# macOS or Linux with Homebrew
+brew install mbianchidev/tap/sql-not-so-lite
+sqnsl start
+
+# Optional user service, instead of the foreground command above
+brew services start mbianchidev/tap/sql-not-so-lite
+```
+
+For Linux, download the matching AMD64 or ARM64 package from
+[GitHub Releases](https://github.com/mbianchidev/sql-not-so-lite/releases):
+
+```bash
+VERSION=0.0.3
+sudo apt install "./sql-not-so-lite_${VERSION}_linux_amd64.deb"  # Debian/Ubuntu
+sudo dnf install "./sql-not-so-lite_${VERSION}_linux_amd64.rpm"  # Fedora/RHEL
+sqnsl start
+```
+
+Replace `amd64` with `arm64` for ARM machines. Installing a package does not start
+a daemon or scan files as root. To enable the packaged Linux user service:
+
+```bash
+systemctl --user daemon-reload
+systemctl --user enable --now sqnsl
+```
+
+Portable `.tar.gz` archives and `checksums.txt` are also available for macOS and
+Linux. Use a release containing these assets; older source-only releases do not
+include installable packages. See [installation and release details](docs/releases.md).
+
 ### Build from source
 
 ```bash
@@ -62,12 +97,21 @@ sqnsl gui          # Opens web GUI in browser
 ### Docker
 
 ```bash
+# Published multiarch image (AMD64 and ARM64)
+docker run --rm -p 127.0.0.1:9147:9147 -p 127.0.0.1:50051:50051 \
+  -v sqnsl-data:/data ghcr.io/mbianchidev/sql-not-so-lite:latest
+
+# Or build locally
 make docker-up     # Start with docker compose
 # GUI at http://localhost:9147
 # gRPC at localhost:50051
 ```
 
 Docker only scans paths mounted into the container. Use the native binary for full desktop discovery, or mount host paths and set `SQNSL_SCAN_ROOT` to the mounted location.
+
+Container configuration, replicas, and snapshots live under `/data` alongside
+the managed databases, so the data volume preserves them across upgrades.
+See [container storage and discovery](docs/releases.md#containers).
 
 ## CLI Reference
 
@@ -297,6 +341,9 @@ sql-not-so-lite/
 ├── api/proto/           # Protobuf definitions + generated code
 ├── web/                 # React + Vite GUI source
 ├── deploy/              # launchd, systemd, Docker
+├── docs/                # Installation and release operations
+├── scripts/             # Release generation and installation checks
+├── .goreleaser.yaml     # Cross-platform release artifacts
 └── Makefile
 ```
 

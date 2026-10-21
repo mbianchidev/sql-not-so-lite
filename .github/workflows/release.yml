@@ -1,0 +1,123 @@
+name: Release
+
+on:
+  push:
+    tags: ["v[0-9]*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  checks:
+    uses: ./.github/workflows/ci.yml
+
+  publish:
+    name: Publish release and multiarch image
+    needs: checks
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+    env:
+      GOFLAGS: -p=1
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Configure Go worker budget
+        run: bash scripts/ci-go-budget.sh
+
+      - name: Require a release commit from main
+        run: git merge-base --is-ancestor HEAD origin/main
+
+      - name: Require tap publication credentials for stable releases
+        if: ${{ !contains(github.ref_name, '-') }}
+        env:
+          TAP_KEY: ${{ secrets.HOMEBREW_TAP_SSH_KEY }}
+        run: |
+          if [ -z "$TAP_KEY" ]; then
+            echo "::error::Set HOMEBREW_TAP_SSH_KEY to the Homebrew tap's write-scoped deploy key."
+            exit 1
+          fi
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: |
+            go.sum
+            .goreleaser.yaml
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: web-gui-${{ github.sha }}
+          path: ${{ runner.temp }}/sqnsl-gui-${{ github.sha }}
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: goreleaser/goreleaser-action@a4f02ab5355a589de60d917a659ce617ed19b3de # v7.3.0
+        with:
+          version: v2.18.3
+          args: release --clean --parallelism=${{ env.CI_WORKERS }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SQNSL_GUI_ARTIFACT_DIR: ${{ runner.temp }}/sqnsl-gui-${{ github.sha }}
+
+  homebrew:
+    name: Update Homebrew tap
+    needs: publish
+    if: ${{ !contains(github.ref_name, '-') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v6
+        with:
+          node-version: 22
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: mbianchidev/homebrew-tap
+          ref: main
+          path: homebrew-tap
+          ssh-key: ${{ secrets.HOMEBREW_TAP_SSH_KEY }}
+
+      - name: Generate formula from published release checksums
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+            --pattern checksums.txt --dir "$RUNNER_TEMP/release"
+          node scripts/homebrew.mjs "$RELEASE_TAG" \
+            "$RUNNER_TEMP/release/checksums.txt" homebrew-tap/Formula/sql-not-so-lite.rb
+          ruby -c homebrew-tap/Formula/sql-not-so-lite.rb
+
+      - name: Commit and push formula
+        working-directory: homebrew-tap
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_OWNER: ${{ github.repository_owner }}
+        run: |
+          git config user.name "$RELEASE_OWNER"
+          git config user.email "$RELEASE_OWNER@users.noreply.github.com"
+          git add Formula/sql-not-so-lite.rb
+          if git diff --cached --quiet; then
+            echo "Tap already contains $RELEASE_TAG."
+          else
+            git commit --no-gpg-sign -m "Update sql-not-so-lite to $RELEASE_TAG"
+            git push origin HEAD:main
+          fi

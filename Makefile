@@ -1,16 +1,16 @@
-.PHONY: all build test clean proto gui install uninstall dev
+.PHONY: all build test clean proto gui install uninstall dev release-snapshot
 
-VERSION := 0.1.0
+VERSION ?= dev
 BINARY := sqnsl
-GO_FILES := $(shell find . -name '*.go' -not -path './web/*')
 WEB_DIR := web
 STATIC_DIR := internal/server/static
+LDFLAGS := -s -w -X github.com/mbianchidev/sql-not-so-lite/internal/server.Version=$(VERSION)
 
 all: gui build
 
 # Build Go binary (includes embedded GUI)
 build:
-	go build -ldflags="-s -w" -o $(BINARY) ./cmd/sqnsl/
+	go build -trimpath -ldflags="$(LDFLAGS)" -o $(BINARY) ./cmd/sqnsl/
 
 # Run tests
 test:
@@ -28,7 +28,7 @@ proto:
 
 # Build GUI
 gui:
-	cd $(WEB_DIR) && npm install && npm run build
+	bash scripts/build-gui.sh
 
 # Dev mode: run GUI dev server (proxy to Go backend)
 dev-gui:
@@ -57,7 +57,13 @@ clean:
 
 # Docker build
 docker-build:
-	docker build -t sql-not-so-lite:$(VERSION) -f deploy/docker/Dockerfile --no-cache .
+	docker build --build-arg VERSION=$(VERSION) -t sql-not-so-lite:$(VERSION) -f deploy/docker/Dockerfile --no-cache .
+
+release-snapshot:
+	goreleaser check
+	goreleaser release --snapshot --clean
+	node scripts/verify-release.mjs dist --docker
+	bash scripts/test-packages.sh dist
 
 # Docker run
 docker-run:
@@ -89,3 +95,4 @@ help:
 	@echo "  docker-build - Build Docker image"
 	@echo "  docker-up    - Start with docker compose"
 	@echo "  docker-down  - Stop docker compose"
+	@echo "  release-snapshot - Build and verify release archives, packages, and images"

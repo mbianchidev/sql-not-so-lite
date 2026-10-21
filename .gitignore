@@ -1,6 +1,7 @@
 # Binaries
 /sqnsl
 *.exe
+/dist/
 
 # Build (keep placeholder index.html for go:embed)
 internal/server/static/*
