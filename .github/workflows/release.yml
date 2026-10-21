@@ -33,8 +33,18 @@ jobs:
       - name: Configure Go worker budget
         run: bash scripts/ci-go-budget.sh
 
-      - name: Require a release commit from main
-        run: git merge-base --is-ancestor HEAD origin/main
+      - name: Require a live release tag from main
+        env:
+          RELEASE_REF: ${{ github.ref }}
+        run: |
+          git merge-base --is-ancestor HEAD origin/main
+          expected=$(git rev-parse --verify "$RELEASE_REF")
+          actual=$(git ls-remote --refs origin "$RELEASE_REF" | awk '{print $1}')
+          if [ "$actual" != "$expected" ] ||
+            [ "$(git rev-parse "$RELEASE_REF^{commit}")" != "$(git rev-parse HEAD)" ]; then
+            echo "::error::The release tag was removed or replaced. Refusing publication."
+            exit 1
+          fi
 
       - name: Require tap publication credentials for stable releases
         if: ${{ !contains(github.ref_name, '-') }}

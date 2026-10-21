@@ -48,6 +48,10 @@ jobs:
           cache: npm
           cache-dependency-path: web/package-lock.json
 
+      - name: Test release automation and formula generation
+        working-directory: ${{ github.workspace }}
+        run: node --test scripts/release.test.mjs scripts/homebrew.test.mjs
+
       - name: Install dependencies
         run: npm ci
 
@@ -96,9 +100,6 @@ jobs:
           path: ${{ runner.temp }}/sqnsl-gui-${{ github.sha }}
 
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
-
-      - name: Test formula generation
-        run: node --test scripts/homebrew.test.mjs
 
       - uses: goreleaser/goreleaser-action@a4f02ab5355a589de60d917a659ce617ed19b3de # v7.3.0
         with:
