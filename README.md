@@ -16,26 +16,22 @@ Managed databases support writes. Discovered databases stay at their original pa
 
 ## Quickstart
 
-Supports **macOS and Linux, AMD64 and ARM64**. Source builds need Git, Make, **Go 1.27.3+**, and **Node.js 22.13+ within 22.x, or 24+**, with npm.
-
-Current releases contain source archives only. Build the complete application:
+Supports **macOS and Linux, AMD64 and ARM64**. With [Homebrew](https://brew.sh/):
 
 ```bash
-git clone https://github.com/mbianchidev/sql-not-so-lite.git
-cd sql-not-so-lite
-make all
+brew install mbianchidev/tap/sql-not-so-lite
 
 mkdir -p "$HOME/sqnsl-scan"
-SQNSL_SCAN_ROOT="$HOME/sqnsl-scan" ./sqnsl start
+SQNSL_SCAN_ROOT="$HOME/sqnsl-scan" sqnsl start
 ```
 
-`make all` installs the locked frontend dependencies and embeds the built GUI in `./sqnsl`. The explicit scan root keeps the first run scoped to one directory.
+Release binaries include the GUI; Go and Node.js are only needed for source builds. The explicit scan root keeps the first run scoped to one directory. See [installation](docs/installation.md) for portable archives, Linux packages, and source setup.
 
 Open **[http://localhost:9147](http://localhost:9147)**. In another terminal, verify the daemon:
 
 ```bash
 curl -fsS http://localhost:9147/api/health
-# {"status":"ok","version":"dev"}
+# Returns status "ok" and the installed version.
 ```
 
 Stop it with **Ctrl+C**. See [installation](docs/installation.md) for a persistent binary, user services, Docker, and troubleshooting.
@@ -58,7 +54,7 @@ Discovery and replication operate only on files the process can access. Local re
 
 Create a database from the GUI sidebar, then use **Browse**, **Schema**, or **SQL Editor**. To inspect existing files, open **Discovery** and scan a directory.
 
-Run `./sqnsl config init` once to create `~/.sql-not-so-lite/config.toml`. Choose a persistent scan root before installing a service, then restart the daemon after configuration changes. TOML paths must be absolute; they do not expand `~` or `$HOME`.
+Run `sqnsl config init` once to create `~/.sql-not-so-lite/config.toml`. Choose a persistent scan root before installing a service, then restart the daemon after configuration changes. TOML paths must be absolute; they do not expand `~` or `$HOME`.
 
 Follow the [configuration reference](docs/configuration.md) for storage paths, scan intervals, and environment overrides, or the [API examples](docs/api.md) to connect an application.
 

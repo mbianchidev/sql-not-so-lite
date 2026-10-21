@@ -6,7 +6,7 @@
 
 | Guide | Start here for |
 |-------|----------------|
-| [Installation](installation.md) | Supported platforms, source builds, user services, Docker, and troubleshooting |
+| [Installation](installation.md) | Releases and source builds, supported platforms, user services, Docker, and troubleshooting |
 | [Usage](usage.md) | GUI workflows, CLI commands, discovery, local replication, and safe snapshot recovery |
 | [Configuration](configuration.md) | TOML settings, defaults, storage paths, environment overrides, and inactive settings |
 | [APIs](api.md) | gRPC and REST examples, endpoint reference, and query-result limitations |

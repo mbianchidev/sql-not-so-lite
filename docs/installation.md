@@ -10,9 +10,33 @@ Source builds require Git, Make, Go **1.27.3+**, and Node.js with npm. Use **Nod
 
 Optional tools are documented with their workflows: Docker/Compose for containers, `grpcurl` for [gRPC examples](api.md), and protobuf tooling for [development](development.md).
 
+## Install a release
+
+[Packaged releases](https://github.com/mbianchidev/sql-not-so-lite/releases) start at `v0.0.3`, with macOS/Linux archives and Linux `.deb`/`.rpm` packages. Release binaries include the GUI and need neither Go nor Node.js at runtime.
+
+With [Homebrew](https://brew.sh/) on macOS or Linux:
+
+```bash
+brew install mbianchidev/tap/sql-not-so-lite
+mkdir -p "$HOME/sqnsl-scan"
+SQNSL_SCAN_ROOT="$HOME/sqnsl-scan" sqnsl start
+```
+
+Open [http://localhost:9147](http://localhost:9147); `/api/health` returns status `"ok"` and the installed release version. Stop the foreground process with **Ctrl+C**.
+
+Without Homebrew, follow the [portable archive and checksum instructions](releases.md#portable-archives), or download the package for your Linux distribution and architecture. For example, after downloading the matching assets:
+
+```bash
+VERSION=0.0.3
+sudo apt install "./sql-not-so-lite_${VERSION}_linux_amd64.deb"  # Debian/Ubuntu
+sudo dnf install "./sql-not-so-lite_${VERSION}_linux_amd64.rpm"  # Fedora/RHEL
+```
+
+Use the command for your distribution and replace `amd64` with `arm64` on ARM machines. Run the daemon as your normal user, not with `sudo`.
+
 ## Build from source
 
-The existing `v0.0.1` and `v0.0.2` releases contain source archives, not installable binaries. Until a packaged release is available, build the current default branch:
+To build the current default branch rather than install a release:
 
 ```bash
 git clone https://github.com/mbianchidev/sql-not-so-lite.git
@@ -69,14 +93,11 @@ Do not run a foreground daemon and a service on the same ports. `sqnsl uninstall
 
 Foreground logs go to stderr. The macOS launchd definition redirects output to `~/.sql-not-so-lite/sqnsl.log`; the Linux user unit uses the journal. Changing `logging.file` in TOML does not redirect foreground logging.
 
-## Packaged installation
+## Release services and upgrades
 
-Release automation targets macOS/Linux `.tar.gz` archives, Linux `.deb`/`.rpm` packages, a Homebrew formula, and AMD64/ARM64 GHCR images. Check [actual release assets](https://github.com/mbianchidev/sql-not-so-lite/releases) before following these paths; configured targets are not proof that packages have been published.
-
-Once the Homebrew formula exists:
+For a Homebrew-managed user service, use this instead of starting the foreground daemon:
 
 ```bash
-brew install mbianchidev/tap/sql-not-so-lite
 brew services start mbianchidev/tap/sql-not-so-lite
 ```
 
@@ -87,7 +108,7 @@ systemctl --user daemon-reload
 systemctl --user enable --now sqnsl
 ```
 
-Use only one service manager: Homebrew services, the packaged Linux unit, or `sqnsl install`. Built release binaries include the GUI and need neither Go nor Node.js at runtime. See [release installation and upgrades](releases.md) for archive checksums, package behavior, and removal.
+Use only one service manager: Homebrew services, the packaged Linux unit, or `sqnsl install`. See [release installation and upgrades](releases.md) for archive checksums, package behavior, and removal.
 
 ## Docker from source
 

@@ -1,11 +1,12 @@
 # Installation and releases
 
-[Documentation index](README.md) | [Source installation](installation.md) | [Developer guide](development.md)
+[Documentation index](README.md) | [Installation guide](installation.md) | [Developer guide](development.md)
 
 ## Release contents
 
-The configured `vMAJOR.MINOR.PATCH` release workflow targets the following
-artifacts. The existing `v0.0.1` and `v0.0.2` releases are source-only; check
+The configured `vMAJOR.MINOR.PATCH` release workflow publishes the following
+artifacts, available starting with `v0.0.3`. The older `v0.0.1` and `v0.0.2`
+releases are source-only; check
 [actual release assets](https://github.com/mbianchidev/sql-not-so-lite/releases)
 before using package, archive, or published-image instructions.
 
