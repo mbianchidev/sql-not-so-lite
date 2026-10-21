@@ -197,14 +197,25 @@ needed; `web/package.json` remains the private frontend package's `0.0.0`.
 Both `X.Y.Z` and `vX.Y.Z` are accepted. Leading zeroes, prerelease/build suffixes,
 whitespace, and extra arguments are rejected. Numeric components are compared
 without floating-point truncation. The version must advance beyond existing
-stable Git tags, GitHub releases (including drafts), GHCR tags, and the Homebrew formula. Existing
-target archives/images, partial architecture images, historical workflow runs,
-and local/remote tags are conflicts, never overwritten.
+stable Git tags, GitHub releases (including drafts), GHCR tags, and the Homebrew
+formula. Existing target archives/images, partial architecture images, and
+local/remote tags are conflicts, never overwritten.
+
+A failed version is reusable when all its previous Release runs completed
+with `failure`, `cancelled`, or `timed_out` on their first attempt, and **both**
+publication jobs were skipped. The script verifies each run's identity and
+attempt-specific jobs, rechecks its live state, and requires no target
+release/image/formula or local/remote tag to remain. Active, successful, rerun,
+previously publishing, or unverifiable historical runs still block reuse.
+There is no need to delete old workflow runs to retry a pre-publication failure.
 
 The script inventories publication state again immediately before creating the
-tag. After pushing, it discovers the source repository's `Release` workflow by
-its workflow ID, tag, commit SHA, push event, and first run attempt. It never
-watches an unrelated latest run. A rerun or multiple matching runs makes
+tag and checks that the verified history has not changed. After pushing, it
+discovers the source repository's new `Release` workflow run by its workflow
+ID, tag, commit SHA, push event, and first run attempt. Verified historical run
+IDs are excluded even when they share the current commit; the script never
+watches or cancels an old run as the new invocation's run. A changed/rerun
+historical run, a rerun of the new run, or multiple new matching runs makes
 ownership uncertain and stops automatic cleanup. Successful completion also
 requires the expected nonempty release assets, canonical GHCR version tag,
 and updated Homebrew formula to be visible.
@@ -229,8 +240,9 @@ ownership, API visibility, registration, or cleanup cannot be confirmed.
 
 Recovery journals are stored in the common Git directory under
 `sqnsl-releases/vVERSION-INVOCATION.json`. They record the target commit/tag
-object, invocation/run identity, cleanup progress, and prior/current release,
-GHCR image IDs/digests/tags (including `latest`), and tap commit/formula identity.
+object, invocation/run identity, verified historical run IDs/commits/publication
+jobs, cleanup progress, and prior/current release, GHCR image IDs/digests/tags
+(including `latest`), and tap commit/formula identity.
 They contain no tokens and are not committed. A lock in `sqnsl-release.lock`
 serializes local invocations across worktrees.
 
@@ -248,8 +260,12 @@ the source repository's Release run.
 `SIGKILL`, a power loss, or a lost machine cannot run cleanup. Inspect the
 journal, remote refs, and exact workflow before recovery. A stale lock is
 never removed automatically; remove it only after confirming no owner process
-is still running. Do not reuse a failed version after rollback: its historical
-workflow/artifact identity is retired. Choose a newer version instead.
+is still running. After a confirmed clean pre-publication rollback, rerun
+`./release.sh vVERSION` from a clean checkout of current `origin/main` to retry
+the same version. This creates a new tag invocation and workflow run; do not
+manually retag or rerun the old workflow. The script revalidates history and
+publication state before allowing reuse. Previously published or uncertain
+versions still require a new version or explicit coordinated recovery.
 
 | Exit | Meaning |
 |------|---------|

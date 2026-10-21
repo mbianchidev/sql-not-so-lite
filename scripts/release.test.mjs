@@ -261,6 +261,115 @@ test('failed CI rolls back only owned tags after proving publication was skipped
   assert.ok(!f.readState().calls.some(call => call.method !== 'GET'))
 })
 
+test('a failed unpublished historical run permits a new release without claiming the old run', async t => {
+  const f = fixture(t, { tag: 'v0.0.3', previousRuns: [{}] })
+  const result = await f.release()
+  assert.equal(result.code, 0, result.output)
+  const journal = f.journals()[0]
+  assert.equal(journal.runId, 123)
+  assert.deepEqual(journal.previousRuns.map(run => run.id), [100])
+  assert.ok(f.readState().calls.some(call =>
+    call.endpoint === 'repos/mbianchidev/sql-not-so-lite/actions/runs/100/attempts/1/jobs?per_page=100',
+  ))
+  assert.ok(!f.readState().calls.some(call => call.method !== 'GET'))
+  assert.equal(f.git('rev-parse', 'v0.0.3^{commit}'), f.commit)
+})
+
+test('multiple failed, cancelled, or timed-out unpublished runs are excluded even at the same commit', async t => {
+  const f = fixture(t, { previousRuns: [
+    { sameCommit: true },
+    { conclusion: 'cancelled' },
+    { conclusion: 'timed_out' },
+  ] })
+  const result = await f.release()
+  assert.equal(result.code, 0, result.output)
+  assert.deepEqual(f.journals()[0].previousRuns.map(run => run.id), [100, 101, 102])
+  assert.equal(f.journals()[0].runId, 123)
+})
+
+test('a rolled-back CI failure can release the same version in a new invocation', async t => {
+  const f = fixture(t, { scenario: 'ci-failure' })
+  const failed = await f.release()
+  assert.equal(failed.code, 1, failed.output)
+  assert.match(failed.output, /Rollback complete/)
+  writeFileSync(f.env.SQNSL_RELEASE_MOCK_STATE, JSON.stringify({
+    ...f.readState(), scenario: 'success', registered: false, polls: 0,
+    runId: 124, previousRuns: [{ id: 123, head_sha: f.commit }],
+  }))
+  const retried = await f.release()
+  assert.equal(retried.code, 0, retried.output)
+  const released = f.journals().find(journal => journal.outcome === 'released')
+  assert.equal(released.runId, 124)
+  assert.deepEqual(released.previousRuns.map(run => run.id), [123])
+  assert.equal(f.git('rev-parse', 'v1.2.3^{commit}'), f.commit)
+})
+
+for (const [name, previousRun, options, message] of [
+  ['an active historical run', { status: 'in_progress', conclusion: null }, {}, /Historical Release run/],
+  ['a queued historical run', { status: 'queued', conclusion: null }, {}, /Historical Release run/],
+  ['a rerun of a historical release', { run_attempt: 2 }, {}, /identity\/attempt changed/],
+  ['historical image publication', { publicationStarted: true }, {}, /may have started publication/],
+  ['historical Homebrew publication', { homebrewPublished: true }, {}, /may have started publication/],
+  ['missing historical publication jobs', { missingJobs: true }, {}, /Cannot prove both/],
+  ['inaccessible historical publication jobs', { jobsFailure: true }, {}, /HTTP 503/],
+  ['a malformed historical commit', { head_sha: 'invalid' }, {}, /identity\/attempt changed/],
+  ['a historical run rerun during verification', {}, { previousRerunOnRead: true }, /identity\/attempt changed/],
+  ['a historical run rerun before tag creation', {}, { previousRerunBeforePush: true }, /identity\/attempt changed/],
+  ['a new historical run before tag creation', {}, { previousAddedBeforePush: true }, /history changed before tag creation/],
+]) {
+  test(`retry rejects ${name} before creating release resources`, async t => {
+    const f = fixture(t, { previousRuns: [previousRun], ...options })
+    const result = await f.release()
+    assert.equal(result.code, 1, result.output)
+    assert.match(result.output, message)
+    assert.equal(f.git('ls-remote', '--refs', 'origin', 'refs/tags/v1.2.3'), '')
+    assert.throws(() => f.git('rev-parse', '--verify', 'refs/tags/v1.2.3'))
+    assert.ok(!f.readState().calls.some(call => call.method !== 'GET'))
+    assert.ok(!existsSync(join(f.root, '.git/sqnsl-release.lock')))
+  })
+}
+
+test('a retry cancels and rolls back only the new owned run', async t => {
+  const f = fixture(t, { previousRuns: [{ sameCommit: true }], scenario: 'running' })
+  const result = await f.release(undefined, { signalOn: 'in_progress/pending' })
+  assert.equal(result.code, 130, result.output)
+  assert.match(result.output, /Rollback complete/)
+  const writes = f.readState().calls.filter(call => call.method !== 'GET')
+  assert.deepEqual(writes.map(call => call.endpoint), [
+    'repos/mbianchidev/sql-not-so-lite/actions/runs/123/cancel',
+  ])
+  assert.equal(f.journals()[0].runId, 123)
+  assert.equal(f.git('ls-remote', '--refs', 'origin', 'refs/tags/v1.2.3'), '')
+})
+
+test('an old run cannot be claimed when a retried tag has no newly registered workflow', async t => {
+  const f = fixture(t, { previousRuns: [{ sameCommit: true }], neverRegisters: true })
+  const result = await f.release(undefined, {
+    extraEnv: { SQNSL_RELEASE_TIMEOUT_SECONDS: '0.5', SQNSL_RELEASE_ROLLBACK_TIMEOUT_SECONDS: '0.5' },
+  })
+  assert.equal(result.code, 2, result.output)
+  assert.equal(f.journals()[0].runId, undefined)
+  assert.ok(!f.readState().calls.some(call => call.method !== 'GET'))
+  assert.ok(f.git('ls-remote', '--refs', 'origin', 'refs/tags/v1.2.3'))
+})
+
+test('a historical rerun after tag push preserves the retry tag rather than canceling old work', async t => {
+  const f = fixture(t, { previousRuns: [{}], previousRerunAfterPush: true })
+  const result = await f.release()
+  assert.equal(result.code, 2, result.output)
+  assert.match(result.output, /identity\/attempt changed/)
+  assert.ok(!f.readState().calls.some(call => call.method !== 'GET'))
+  assert.ok(f.git('ls-remote', '--refs', 'origin', 'refs/tags/v1.2.3'))
+})
+
+test('duplicate historical run identities cannot be treated as separate safe attempts', async t => {
+  const f = fixture(t, { previousRuns: [{ id: 100 }, { id: 100 }] })
+  const result = await f.release()
+  assert.equal(result.code, 1, result.output)
+  assert.match(result.output, /Duplicate Release run identities/)
+  assert.equal(f.git('ls-remote', '--refs', 'origin', 'refs/tags/v1.2.3'), '')
+})
+
 test('invalid CLI arguments fail before GitHub access or tag creation', async t => {
   const f = fixture(t)
   for (const args of [[], ['1.2.3', 'extra'], ['01.2.3'], ['v1.2.3-rc.1'], ['1.2.3\n']]) {
@@ -279,7 +388,7 @@ for (const [name, options, message] of [
   ['missing package permissions', { noPackageAccess: true }, /read:packages/],
   ['disabled release workflow', { disabled: true }, /workflow is missing or disabled/],
   ['read-only repository access', { readOnly: true }, /Need push access/],
-  ['historical run for a deleted tag', { historicalRun: true, scenario: 'ci-failure' }, /historical Release runs/],
+  ['successful historical run', { previousRuns: [{ conclusion: 'success' }] }, /Historical Release run/],
 ]) {
   test(`preflight rejects ${name} without mutating release resources`, async t => {
     const f = fixture(t, options)
