@@ -1,167 +1,154 @@
 # sql-not-so-lite
 
-Lightweight SQLite-as-a-service daemon. Manages multiple SQLite databases as files, provides a gRPC API for applications and a web GUI for debugging.
+SQLite-as-a-service daemon and local database explorer. sql-not-so-lite manages one SQLite file per application, exposes gRPC and REST APIs, and embeds a React web GUI for working with managed data and inspecting existing SQLite files.
 
-```
-┌──────────┐  gRPC   ┌─────────────────┐    ┌────────────────┐
-│  App A   │────────▶│                 │───▶│ app_a.sqlite   │
-└──────────┘         │ sql-not-so-lite │    ├────────────────┤
-┌──────────┐  gRPC   │    daemon       │───▶│ app_b.sqlite   │
-│  App B   │────────▶│                 │    └────────────────┘
-└──────────┘         │ :50051 (gRPC)   │    ~/.sql-not-so-lite/
-                     │ :9147  (HTTP)   │         databases/
-┌──────────┐  HTTP   │                 │
-│  Web GUI │────────▶│                 │    ┌────────────────┐
-└──────────┘         │   ┌──────────┐  │───▶│ catalog.sqlite │
-                     │   │ scanner  │  │    └────────────────┘
-  ~/                 │   │ catalog  │  │    ┌────────────────┐
-  ├── .docker/       │   │ replica- │  │───▶│   replicas/    │
-  ├── workspace/     │   │   tor    │  │    │   snapshots/   │
-  ├── app-data/  ◀───│   │ schema   │  │    └────────────────┘
-  └── .../*.sqlite   │   └──────────┘  │    ~/.sql-not-so-lite/
-                     └─────────────────┘
+**Managed databases** are created in the daemon's data directory and support writes. **Discovered databases** stay at their original paths and have a separate read-only inspector; discovery does not import or move them. Optional local replicas and stored snapshots provide another way to work with discovered data.
+
+```text
+Applications -- gRPC :50051 --> sqnsl -- managed *.sqlite + catalog.sqlite
+Browser ------ HTTP  :9147 -->       -- discovery of existing SQLite files
+                                    -- local replicas + stored snapshots
 ```
 
-<img width="1710" height="949" alt="image" src="https://github.com/user-attachments/assets/eee13914-f61f-483f-b58c-dd04d950286a" />
+<img width="1710" height="949" alt="sql-not-so-lite web interface" src="https://github.com/user-attachments/assets/eee13914-f61f-483f-b58c-dd04d950286a" />
 
 ## Features
 
-- **Multi-database**: Each app creates its own `.sqlite` file
-- **gRPC API**: Typed, high-performance API for applications
-- **Web GUI**: Browse and insert rows, create tables with ordered fields, view schemas, and run SQL queries with Monaco editor
-- **Idle management**: Closes idle connections automatically, stays dormant when unused (~5-10MB RSS)
-- **Single binary**: GUI embedded via `go:embed` — one file to run
-- **Cross-platform**: macOS (launchd), Linux (systemd), Docker
-- **Database discovery**: Scans `$HOME` (by default, configurable) for SQLite databases across containers, app data dirs, and workspaces
-- **Persistent discovery**: Keeps scan history, missing-file state, and favorites across restarts
-- **Differential replication**: Resumes active replicas after restart and updates only changed tables
-- **Point-in-time recovery**: Restore any discovered database from snapshots
-- **Schema versioning**: Tracks schema changes with transition history (v0 = initial creation)
-- **GitHub repo detection**: Links discovered databases to their upstream GitHub repositories
+- **Application APIs**: Create, list, and delete managed databases; execute parameterized SQL and query data through gRPC or REST.
+- **Web GUI**: Browse and insert rows, create tables, edit supported column definitions, run SQL with Monaco, and export query results as CSV or JSON.
+- **Local discovery**: Search configured roots for SQLite files, inspect them read-only, find GitHub repository associations, and preserve favorites and missing-file state across restarts.
+- **Local replication**: Create consistent baseline copies, periodically synchronize changed tables, resume active replicas after restart, and restore stored snapshots.
+- **Single-binary deployment**: Pure-Go SQLite needs no CGO or separate database server. The built GUI is embedded, and idle database connections are closed automatically.
 
-## Quick Start
+## Requirements
 
-### Install a release
+- **Native platforms**: macOS and Linux, AMD64 or ARM64. Service integration uses launchd on macOS and per-user systemd on Linux. Windows is not a supported build/release target.
+- **Source builds**: Git, Make, Go **1.27.3+**, and Node.js with npm. Use **Node.js 22.13+ within 22.x, or 24+** to satisfy the frontend build and lint tool requirements.
+- **Optional tools**: Docker with Compose for containers; `grpcurl` for the gRPC examples; `protoc`, `protoc-gen-go`, and `protoc-gen-go-grpc` on `PATH` only when regenerating protobuf code.
 
-Releases include the complete web GUI. Go and Node.js are only needed to build from source.
+> **Trusted environments only:** HTTP and gRPC listen on all network interfaces, not just localhost, and have no built-in authentication or TLS. Restrict access with a firewall or an authenticated proxy. Run as your normal user, not root; the default discovery root is your entire home directory.
+
+## Quick start
+
+### Build and run from source
+
+The existing `v0.0.1` and `v0.0.2` releases are source-only. Building the current default branch is the available installation path until a packaged release is published.
 
 ```bash
-# macOS or Linux with Homebrew
-brew install mbianchidev/tap/sql-not-so-lite
-sqnsl start
+git clone https://github.com/mbianchidev/sql-not-so-lite.git
+cd sql-not-so-lite
+make all
 
-# Optional user service, instead of the foreground command above
+# Use a small, explicit discovery root for the first run.
+mkdir -p "$HOME/sqnsl-scan"
+SQNSL_SCAN_ROOT="$HOME/sqnsl-scan" ./sqnsl start
+```
+
+`make all` installs the locked frontend dependencies, builds the GUI, then compiles `./sqnsl`. `make build` or `go build` alone on a clean checkout embeds only the placeholder page.
+
+Leave the daemon running and open [http://localhost:9147](http://localhost:9147). In another terminal, verify the API:
+
+```bash
+curl -fsS http://localhost:9147/api/health
+# {"status":"ok","version":"dev"}
+```
+
+Stop the foreground daemon with **Ctrl+C**. Without `SQNSL_SCAN_ROOT`, startup immediately scans `$HOME` recursively and repeats every 30 minutes. The override above applies only to that process; configure a persistent scan root before enabling a service.
+
+### Install the built binary and optional user service
+
+```bash
+mkdir -p "$HOME/.local/bin"
+install -m 755 sqnsl "$HOME/.local/bin/sqnsl"
+export PATH="$HOME/.local/bin:$PATH"
+sqnsl version
+```
+
+Add that directory to your shell's `PATH` permanently if needed. Use a stable binary location before installing a service:
+
+```bash
+sqnsl config init   # Once, if the config file does not already exist
+# Edit ~/.sql-not-so-lite/config.toml before enabling discovery.
+sqnsl install       # Normal user: launchd or per-user systemd
+# Linux additionally needs:
+systemctl --user start sqnsl
+```
+
+On macOS, the launchd agent loads during installation and starts on login. Use `sqnsl uninstall` to remove this integration. Do not run a foreground daemon and a service on the same ports.
+
+### Packaged releases, when published
+
+Release automation is configured for macOS/Linux `.tar.gz` archives, Linux `.deb`/`.rpm` packages, Homebrew, and multiarch GHCR images. These are distribution targets, not assets in the existing source-only releases. Check [GitHub Releases](https://github.com/mbianchidev/sql-not-so-lite/releases) for actual assets before following package instructions.
+
+Once the Homebrew formula is published:
+
+```bash
+brew install mbianchidev/tap/sql-not-so-lite
 brew services start mbianchidev/tap/sql-not-so-lite
 ```
 
-For Linux, download the matching AMD64 or ARM64 package from
-[GitHub Releases](https://github.com/mbianchidev/sql-not-so-lite/releases):
+Built release binaries include the GUI and need neither Go nor Node.js at runtime. See [installation, checksums, packages, and upgrades](docs/releases.md). Use only one service manager: Homebrew services, a packaged Linux user unit, or `sqnsl install`.
+
+### Docker from source
 
 ```bash
-VERSION=0.0.3
-sudo apt install "./sql-not-so-lite_${VERSION}_linux_amd64.deb"  # Debian/Ubuntu
-sudo dnf install "./sql-not-so-lite_${VERSION}_linux_amd64.rpm"  # Fedora/RHEL
-sqnsl start
-```
-
-Replace `amd64` with `arm64` for ARM machines. Installing a package does not start
-a daemon or scan files as root. To enable the packaged Linux user service:
-
-```bash
-systemctl --user daemon-reload
-systemctl --user enable --now sqnsl
-```
-
-Portable `.tar.gz` archives and `checksums.txt` are also available for macOS and
-Linux. Use a release containing these assets; older source-only releases do not
-include installable packages. See [installation and release details](docs/releases.md).
-
-### Build from source
-
-```bash
-# Prerequisites: Go 1.27.3+, Node.js 22+, protoc (for proto changes)
-make all        # Build GUI + Go binary
-./sqnsl start   # Start daemon (foreground)
-```
-
-The default scan walks the full home directory recursively, including platform app-data locations such as `~/Library/Application Support`, `~/.config`, and `~/.local`.
-
-### Install as service
-
-```bash
-make install       # Copies binary to /usr/local/bin
-sqnsl install      # Installs as launchd (macOS) or systemd (Linux) service
-sqnsl gui          # Opens web GUI in browser
-```
-
-### Docker
-
-```bash
-# Published multiarch image (AMD64 and ARM64)
+make docker-build  # No-cache build; default image tag is dev
 docker run --rm -p 127.0.0.1:9147:9147 -p 127.0.0.1:50051:50051 \
-  -v sqnsl-data:/data ghcr.io/mbianchidev/sql-not-so-lite:latest
-
-# Or build locally
-make docker-up     # Start with docker compose
-# GUI at http://localhost:9147
-# gRPC at localhost:50051
+  -v sqnsl-data:/data sql-not-so-lite:dev
 ```
 
-Docker only scans paths mounted into the container. Use the native binary for full desktop discovery, or mount host paths and set `SQNSL_SCAN_ROOT` to the mounted location.
+Alternatively, `make docker-up` builds without cache and starts Compose in the background; `make docker-down` stops it. **The checked-in Compose file publishes both ports on all host interfaces**, unlike the localhost-only `docker run` example above.
 
-Container configuration, replicas, and snapshots live under `/data` alongside
-the managed databases, so the data volume preserves them across upgrades.
-See [container storage and discovery](docs/releases.md#containers).
+Containers see only mounted files. Use the native binary for desktop-wide discovery, or mount a source directory and set `SQNSL_SCAN_ROOT` to its container path. A read-only source mount cannot support in-place source restoration.
+
+Configuration, catalog, managed databases, replicas, and snapshots live under `/data`; retain the volume across upgrades. [Container documentation](docs/releases.md#containers) covers mounts and GHCR tags to use after an image has been published.
 
 ## CLI Reference
 
+```text
+sqnsl start [-d]                 Start daemon (-d for background)
+sqnsl stop                       Signal the running daemon to stop
+sqnsl status                     Show daemon status
+sqnsl list                       List database files in the data directory
+sqnsl gui                        Open the running daemon's GUI in a browser
+sqnsl install                    Install a per-user service
+sqnsl uninstall                  Remove that service
+sqnsl config                     Show core configuration
+sqnsl config init                Create the default config file
+sqnsl version                    Print version
+sqnsl scan [path...]             Scan for SQLite databases
+sqnsl discovered                 List discovered databases
+sqnsl replicate <name>           Start or resume local replication
+sqnsl replicate stop <name>      Pause replication
+sqnsl restore <name>             Restore latest snapshot to original source
+sqnsl restore <name> -v N        Restore a specific snapshot to source
+sqnsl restore <name> --to <path>  Restore a snapshot to an alternate file
+sqnsl versions <name>            List stored schema versions
+sqnsl transitions <name>         List stored schema transitions
 ```
-sqnsl start [-d]    Start daemon (-d for background)
-sqnsl stop          Stop running daemon
-sqnsl status        Show daemon status
-sqnsl list          List all databases
-sqnsl gui           Open web GUI in browser
-sqnsl install       Install as system service
-sqnsl uninstall     Remove system service
-sqnsl config        Show configuration
-sqnsl config init   Create default config file
-sqnsl version       Print version
-sqnsl scan [path...]       Scan for SQLite databases
-sqnsl discovered           List discovered databases
-sqnsl replicate <name>     Start replicating a discovered database
-sqnsl replicate stop <name> Stop replication
-sqnsl restore <name>       Restore from replica snapshot
-sqnsl restore <name> -v N  Restore specific snapshot version
-sqnsl restore <name> --to <path>  Restore to alternate path
-sqnsl versions <name>      List schema versions
-sqnsl transitions <name>   Show schema transition history
-```
+
+Use `sqnsl <command> --help` for flags. The GUI and APIs need a running daemon; the discovery/replication CLI commands also access local files and the catalog directly.
 
 ## Configuration
 
-Config file: `~/.sql-not-so-lite/config.toml`
+Run `sqnsl config init` once to write `~/.sql-not-so-lite/config.toml`, then edit it and restart the daemon. Omitted settings use defaults. The generated file contains absolute paths; **TOML path strings do not expand `~` or `$HOME`**.
+
+For example, these overrides limit discovery to a chosen directory while keeping the other storage defaults:
 
 ```toml
 [server]
 grpc_port = 50051
 http_port = 9147
-data_dir = "~/.sql-not-so-lite/databases"
 
 [idle]
-connection_timeout = "5m"    # Close DB after 5 min idle
-check_interval = "30s"       # Check for idle DBs every 30s
+connection_timeout = "5m"
+check_interval = "30s"
 
 [limits]
 max_databases = 100
-max_query_size = 10485760    # 10MB
-max_result_rows = 100000
-
-[logging]
-level = "info"
-file = "~/.sql-not-so-lite/sqnsl.log"
 
 [scanner]
-scan_root = "~/"
+scan_root = "/absolute/path/to/databases"
 file_extensions = [".sqlite", ".db", ".sqlite3", ".sqlitedb"]
 exclude_patterns = ["node_modules", ".git/objects", "*.tmp"]
 scan_interval = "30m"
@@ -169,19 +156,18 @@ scan_interval = "30m"
 [replicator]
 enabled = true
 sync_interval = "5s"
-snapshot_retention = 10
-replica_dir = "~/.sql-not-so-lite/replicas"
-snapshot_dir = "~/.sql-not-so-lite/snapshots"
 ```
 
-Run `sqnsl config init` to create the default config file.
+Default storage is under `~/.sql-not-so-lite/`: `databases/` holds managed files and `catalog.sqlite`, `replicas/` holds current local copies, and `snapshots/` holds stored baselines. Set `server.data_dir`, `replicator.replica_dir`, and `replicator.snapshot_dir` to absolute paths to relocate them.
 
 Environment variables override file settings when present:
 
 | Variable | Description |
 |----------|-------------|
-| `SQNSL_DATA_DIR` | Catalog and managed database directory |
-| `SQNSL_SCAN_ROOT` | Default recursive filesystem scan root |
+| `SQNSL_DATA_DIR` | Catalog and managed database directory only; does not relocate replicas, snapshots, or config |
+| `SQNSL_SCAN_ROOT` | Recursive scan root; also resets discovery's path-priority defaults |
+
+Foreground logs go to stderr. The generated `logging.level`/`logging.file`, `limits.max_query_size`/`limits.max_result_rows`, and `replicator.snapshot_retention` settings are not currently wired to runtime enforcement. Do not rely on them for logging, request-size protection, or automatic snapshot pruning.
 
 ## gRPC API
 
@@ -220,6 +206,17 @@ grpcurl -plaintext -d '{"database":"myapp","sql":"SELECT * FROM users","limit":1
 
 ## REST API (for GUI)
 
+Create a managed database and run a query without a gRPC client:
+
+```bash
+curl -fsS http://localhost:9147/api/databases \
+  -H 'Content-Type: application/json' -d '{"name":"demo"}'
+curl -fsS http://localhost:9147/api/databases/demo/query \
+  -H 'Content-Type: application/json' -d '{"sql":"SELECT 1 AS ready"}'
+```
+
+The query response contains `"Rows":[["1"]]`. Select `demo` in the GUI to create tables or run further SQL. Repeating the create request with the same name returns an error rather than replacing the file.
+
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/api/databases` | List all databases |
@@ -236,6 +233,7 @@ grpcurl -plaintext -d '{"database":"myapp","sql":"SELECT * FROM users","limit":1
 | POST | `/api/databases/:name/query` | Execute SQL `{"sql":"..."}` |
 | GET | `/api/health` | Health check |
 | GET | `/api/stats` | Memory, connections, uptime |
+| GET | `/api/scan` | Current scan status |
 | POST | `/api/scan` | Scan the default root or `{"paths":["/absolute/path"]}` |
 | GET | `/api/discovered` | List discovered databases |
 | GET | `/api/discovered/:id` | Get discovered DB details |
@@ -245,7 +243,7 @@ grpcurl -plaintext -d '{"database":"myapp","sql":"SELECT * FROM users","limit":1
 | POST | `/api/discovered/:id/query` | Run one read-only SELECT query `{"sql":"SELECT ..."}` |
 | POST | `/api/discovered/:id/replicate` | Start replication |
 | DELETE | `/api/discovered/:id/replicate` | Stop replication |
-| POST | `/api/discovered/:id/restore` | Restore `{"version":N}` |
+| POST | `/api/discovered/:id/restore` | Restore a snapshot to the local replica `{"version":N}` |
 | GET | `/api/discovered/:id/snapshots` | List snapshots |
 | GET | `/api/discovered/:id/versions` | Schema versions |
 | GET | `/api/discovered/:id/transitions` | Schema transitions |
@@ -263,8 +261,8 @@ Access at `http://localhost:9147` when the daemon is running.
 - **Discovered databases**: Dedicated menu with search by name, path, repository, status, and database metadata
 - **Read-only inspector**: Explore discovered schemas, fields, indexes, table rows, and SELECT results without opening the source for writes
 - **Replication status**: Live indicators for replication state per database
-- **Schema timeline**: Version history viewer with schema transition diffs
-- **Snapshot restore**: One-click restore from any available snapshot
+- **Schema timeline**: View stored schema versions and transition records; see the current tracking limits below
+- **Snapshot restore**: Restore an available snapshot to the local replica, not the original source
 
 Field edits rebuild the table in one transaction while preserving column order, data, indexes, and triggers. The editor rejects schemas with constraints it cannot safely reconstruct instead of silently dropping them.
 
@@ -272,9 +270,16 @@ Field edits rebuild the table in one transaction while preserving column order, 
 
 ### Scanning
 
-The scanner walks `$HOME` (configurable via `scan_root`) looking for SQLite files. Each candidate is validated by checking the first 16 bytes for the SQLite magic header (`SQLite format 3\000`). Discovered databases are recorded in an internal catalog (`catalog.sqlite`) with metadata like path, size, modification time, priority tier, favorite state, and availability.
+The scanner walks `$HOME` by default, including hidden app-data locations such as `~/Library/Application Support`, `~/.config`, and `~/.local`. Set `scanner.scan_root` or `SQNSL_SCAN_ROOT` to narrow the scope. Files must match a configured extension and have the SQLite magic header (`SQLite format 3\000`); encrypted database formats are not supported by this discovery path.
 
-Scanning runs every 30 minutes by default. Set `scanner.scan_interval` in `~/.sql-not-so-lite/config.toml` to any Go duration such as `"15m"` or `"2h"`. Scans can also be triggered on-demand via `sqnsl scan` or `POST /api/scan`. Repeat scans update changed metadata, confirm existing paths, and mark missing files without deleting their catalog history or favorites.
+The catalog records path, size, modification time, priority tier, repository association, favorite state, and availability. The daemon scans at startup and every 30 minutes by default. Set `scanner.scan_interval` to a positive Go duration such as `"15m"` or `"2h"`. GUI/API scans update metadata and mark missing files without deleting their history or favorites.
+
+Use the GUI's Discovered menu, `POST /api/scan`, or the CLI for an explicit scan:
+
+```bash
+sqnsl scan /absolute/path/to/databases
+sqnsl discovered
+```
 
 ### Priority tiers
 
@@ -282,11 +287,13 @@ Discovered databases are classified by location to surface the most relevant one
 
 | Priority | Location pattern | Examples |
 |----------|-----------------|----------|
-| 1 — Docker/OrbStack | `~/.docker/`, `~/.orbstack/` | Container-managed databases |
-| 2 — Workspace | `~/workspace/`, `~/projects/` | Active development databases |
-| 3 — Copilot CLI | `~/.copilot/` | Copilot session databases |
-| 4 — App Data | `~/Library/`, `~/.config/`, `~/.local/` | Application state databases |
-| 5 — Other | Everything else under `$HOME` | Miscellaneous databases |
+| 1: Docker/OrbStack | `~/.docker/`, `~/.orbstack/` | Visible container-related SQLite files |
+| 2: Workspace | `~/workspace/`, `~/projects/` | Active development databases |
+| 3: Copilot CLI | `~/.copilot/` | Copilot session databases |
+| 4: App Data | `~/Library/Application Support/`, `~/.config/`, `~/.local/` | Application state databases |
+| 5: Other | Everything else under the scan root | Miscellaneous databases |
+
+These priorities classify visible files; they do not grant access to databases inside an unmounted container or VM.
 
 ### GitHub repo detection
 
@@ -296,41 +303,45 @@ For each discovered database, the scanner walks up the directory tree looking fo
 
 Replication creates and maintains a copy of a discovered database under `replica_dir`:
 
-1. **Initial sync**: Uses `VACUUM INTO` to create a consistent baseline copy of the source database.
-2. **Differential sync**: On each `sync_interval` tick, the replicator compares table schemas and rows, then transactionally replaces only changed tables and removes tables deleted from the source.
+1. **Initial sync**: `sqnsl replicate <name>` or the GUI uses `VACUUM INTO` to create a consistent baseline copy of the source database.
+2. **Differential sync**: The running daemon checks for source-file/WAL changes every `sync_interval` (default 5 seconds), compares table definitions and rows, then transactionally replaces changed tables and removes tables deleted from the source.
 3. **Automatic resume**: Databases left in the replicating state resume when the daemon starts again. Paused or failed replicas can be resumed without recreating version-one metadata.
-4. **Snapshots**: Initial baselines and explicit rebuilds are versioned in `snapshot_dir`. Old snapshots can be pruned based on `snapshot_retention`.
+4. **Snapshots**: Initial baselines and rebuilt baselines are versioned in `snapshot_dir`. Ordinary differential cycles do not create snapshots, and configured retention is not automatically enforced.
 
-Replica writes are serialized per database, and each differential cycle reads the source through one consistent read transaction.
+Each differential cycle reads the source through one consistent transaction and serializes replica writes within its process. This is local, table-level polling, not streaming WAL replication, remote replication, or high availability. Comparing row sets can be expensive for large databases.
 
 ### Schema versioning
 
-Every discovered database has its schema tracked. Version 0 (`v0`) represents the initial schema at discovery time. Each subsequent schema change increments the version and records a transition containing the before/after DDL diff.
+Schema SQL and hashes are recorded when a replication baseline is created, starting at version 0 (`v0`). A later baseline rebuild can record a new schema version.
 
-View schema history with `sqnsl versions <name>` and transition details with `sqnsl transitions <name>`.
+`sqnsl versions <name>`, `sqnsl transitions <name>`, the REST endpoints, and the GUI expose stored history. **Continuous schema-change tracking is not implemented:** scans and ordinary differential syncs do not record new schema versions or transitions, and the runtime does not currently populate transition history.
 
-### Point-in-time recovery
+### Snapshot recovery
 
-Restore a discovered database from any retained snapshot:
+Recovery is limited to stored snapshots, not arbitrary timestamps or every replication tick. Pause replication before restoring, and prefer a new file first:
 
 ```bash
-sqnsl restore mydb              # Restore latest snapshot (in-place)
-sqnsl restore mydb -v 3         # Restore snapshot version 3
-sqnsl restore mydb --to ./copy  # Restore to alternate path
+sqnsl replicate stop mydb
+sqnsl restore mydb --to ./mydb-restored.sqlite
+sqnsl restore mydb -v 3 --to ./mydb-v3.sqlite
 ```
 
-Restores are atomic — the target file is written via a temporary file and renamed.
+**CLI restore overwrites the original source unless `--to` is supplied. GUI/REST restore overwrites the local replica instead.** Stop applications using the target before any in-place restore and keep an independent backup. Restore copies directly into the target and removes its WAL/SHM sidecars; it is not an atomic rename. Resuming replication can overwrite a restored replica with current source data.
+
+### Query result limitations
+
+Query cells are returned as strings, with SQL `NULL` represented by the string `"NULL"`. The query helper defaults to 1,000 rows and caps results at 100,000 independently of the TOML limit setting. `total_count` in gRPC (`TotalCount` in REST JSON) counts rows returned in that page, not all matching rows. Use explicit SQL for counts and do not treat GUI exports as full database backups.
 
 ## Architecture
 
-```
+```text
 sql-not-so-lite/
 ├── cmd/sqnsl/           # CLI entrypoint (cobra)
 ├── internal/
 │   ├── catalog/         # Internal meta-database (catalog.sqlite)
 │   ├── scanner/         # Filesystem SQLite discovery
-│   ├── replicator/      # WAL-aware replication engine
-│   │   └── wal/         # WAL frame parser
+│   ├── replicator/      # Baseline snapshots and table-level differential sync
+│   │   └── wal/         # WAL parser helpers, not the running sync path
 │   ├── schema/          # Schema version tracking
 │   ├── config/          # TOML config loading
 │   ├── daemon/          # Lifecycle, PID file, signals
@@ -350,43 +361,53 @@ sql-not-so-lite/
 **Key design decisions:**
 
 - **Pure Go SQLite** (`modernc.org/sqlite`): No CGO, cross-compiles to single binary
-- **File-per-database**: Each app gets `{name}.sqlite` — readable by any SQLite tool even when the daemon is off
+- **File-per-database**: Each app gets `{name}.sqlite`, readable by other SQLite tools even when the daemon is off
 - **Embedded GUI**: `go:embed` bundles React assets into the binary
 - **Separate ports**: gRPC (:50051) for apps, HTTP (:9147) for GUI + REST
 
 ## Development
 
+Run `make all` once to prepare the frontend dependencies and embedded assets. For hot reload, use separate terminals:
+
 ```bash
 # Run backend in one terminal
-make dev-backend
+SQNSL_SCAN_ROOT="$HOME/sqnsl-scan" make dev-backend
 
 # Run GUI dev server in another (hot reload, proxied to backend)
 make dev-gui
+```
 
-# Run tests
+Vite normally serves [http://localhost:5173](http://localhost:5173) and proxies `/api` to port 9147. If you change the backend HTTP port, update [`web/vite.config.ts`](web/vite.config.ts) accordingly.
+
+```bash
+# Go tests
 make test
+
+# Frontend lint and complete production build
+npm --prefix web run lint
+make all
 
 # Test release automation without publishing anything
 make test-release
 
-# Regenerate protobuf (after editing sqnsl.proto)
+# Regenerate protobuf after editing sqnsl.proto (requires compiler/plugins)
 make proto
 ```
 
 ## Publishing a release
 
-From a clean checkout of current `origin/main`, run `./.release.sh 0.0.3`
-(`v0.0.3` is equivalent). The script advances the product version by creating
-and pushing its canonical annotated tag, then follows that exact Release
-workflow, including full CI. It does not edit the private frontend's version
-or push a commit to `main`.
+Maintainers can use [`./release.sh`](release.sh) with a new `X.Y.Z` or `vX.Y.Z` version from a clean checkout of current `origin/main`. This publishes a real annotated tag and follows the Release workflow; it does not edit the private frontend's version or push a commit to `main`. `./release.sh --help` is safe to inspect without publishing.
 
-Failures before publication cancel/wait for the workflow and remove only
-invocation-owned tags. Once publication may have started, the script retains
-the tag and published resources, exits with an incomplete-recovery status,
-and records prior/current GitHub, GHCR, and Homebrew state for explicit recovery.
-See [release prerequisites, rollback, and recovery](docs/releases.md#publishing).
+Read the [release prerequisites, rollback, and recovery procedure](docs/releases.md#publishing) first. Failures before publication can remove invocation-owned tags; once publication may have started, resources are retained for explicit recovery.
+
+## Documentation and contributing
+
+- [Installation, containers, services, and release operations](docs/releases.md)
+- [gRPC service definitions and message types](api/proto/sqnsl.proto)
+- [Build and development targets](Makefile)
+
+Report bugs or propose improvements through [issues](https://github.com/mbianchidev/sql-not-so-lite/issues) and [pull requests](https://github.com/mbianchidev/sql-not-so-lite/pulls). Include reproduction steps and relevant checks; use synthetic databases for examples and tests, not private application data.
 
 ## License
 
-MIT
+MIT. See [LICENSE](LICENSE).
