@@ -93,6 +93,32 @@ The release Dockerfile copies the already verified GoReleaser binaries. Its
 only build-time command runs on the builder's native architecture, so creating
 the multiarch image does not require installing QEMU on the host.
 
+## CI policy and reuse
+
+Draft pull requests run Go tests/build and frontend installation, lint, and build.
+Marking a PR ready runs the full packaging and native-platform matrix; subsequent
+pushes to a ready PR also run the full suite. Returning to draft restores the
+lightweight checks. Superseded PR runs are canceled, but release runs are not.
+`CI result` rejects failed/canceled prerequisites and only accepts intentionally
+skipped distribution checks for drafts.
+
+The frontend is built once per workflow revision and passed as a SHA-named
+artifact to snapshot packaging and release publication. These consumers use
+`--skip=before` because the GoReleaser before hooks only build the frontend.
+Local snapshot builds still run those hooks. Production binaries are rebuilt
+with the stable version rather than publishing snapshot-versioned binaries.
+
+Cross-compilation uses a separate Go setup-cache fingerprint from the native
+Go job, so a native-only cache cannot prevent the cross-target cache from being
+saved. Homebrew bundles are cached by runner, architecture, Ruby runtime, and
+Gemfile lock hash; installation/style/tests still run on both Mac architectures.
+Caches only accelerate recomputation and are not substitutes for successful tests.
+
+Go compilation/test worker counts are bounded using the Linux runner's available
+CPU and memory. Target builds run at most two at a time without multiplying
+per-target package parallelism. PR matrices fail fast; release matrices collect
+all platform results. Docker builds retain their no-cache policy.
+
 ## Publishing
 
 The `Release` workflow runs on `v*` tags. Before publishing it runs the same CI
