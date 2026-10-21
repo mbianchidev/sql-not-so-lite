@@ -16,8 +16,10 @@ const stableVersion = /^v?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/
 const hash = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/
 const usage = `Usage: ./release.sh X.Y.Z | vX.Y.Z
 
-Run from a clean checkout of current origin/main. Requires Node.js 22+, Git,
+Run from a clean checkout. Switches to main and pulls origin/main with
+fast-forward-only updates before release checks. Requires Node.js 22+, Git,
 and gh with repository push/Actions access and read:packages.
+Never stashes, resets, or rebases local work. Leaves main checked out.
 If authentication is missing or denied, prompts for a hidden, one-off token.
 The token is not saved and does not change gh login or environment credentials.
 The version bump is a new annotated tag, not a source or frontend version edit.
@@ -222,7 +224,8 @@ class Release {
   async checkRemote() {
     const refs = await this.remoteRefs()
     if (refs.get('refs/heads/main') !== this.state.commit) {
-      throw new Error('HEAD must equal current origin/main. Update your clean main checkout before releasing.')
+      throw new Error('HEAD must equal current origin/main after pulling. ' +
+        'Local main has unpushed commits or origin/main changed; resolve this before retrying.')
     }
     for (const ref of refs.keys()) {
       if (ref.startsWith('refs/tags/')) this.requireNewer(ref.slice(10), 'remote tags')
@@ -415,6 +418,12 @@ class Release {
     const journals = join(common, 'sqnsl-releases')
     mkdirSync(journals, { recursive: true, mode: 0o700 })
     this.journal = join(journals, `${this.tag}-${this.state.invocation}.json`)
+    this.save()
+    console.log('Switching to main and pulling origin/main (fast-forward only).')
+    await this.git('switch', 'main')
+    await this.git('pull', '--ff-only', '--no-rebase', '--no-autostash', '--no-tags', 'origin', 'main')
+    this.state.commit = await this.git('rev-parse', '--verify', 'HEAD^{commit}')
+    await this.cleanCheckout()
     this.save()
     console.log(`Preflight ${this.tag} at ${this.state.commit}. Recovery journal: ${this.journal}`)
     await this.checkRemote()

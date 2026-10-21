@@ -66,6 +66,17 @@ function fixture(t, options = {}) {
       JSON.parse(readFileSync(join(dir, name), 'utf8')),
     ) : []
   }
+  const advanceMain = () => {
+    git('switch', '-c', 'remote-update')
+    writeFileSync(join(root, 'release-input.txt'), 'mock merged change\n')
+    git('add', 'release-input.txt')
+    git('commit', '--no-gpg-sign', '-m', 'Advance fixture remote main')
+    git('push', 'origin', 'HEAD:refs/heads/main')
+    const latest = git('rev-parse', 'HEAD')
+    git('switch', 'main')
+    writeFileSync(env.SQNSL_RELEASE_MOCK_STATE, JSON.stringify({ ...readState(), commit: latest }))
+    return latest
+  }
   async function release(args = [tag], { signalOn, signal = 'SIGINT', extraEnv = {}, tokenInput } = {}) {
     const command = ['bash', 'release.sh', ...args]
     const terminal = tokenInput !== undefined
@@ -97,7 +108,7 @@ function fixture(t, options = {}) {
     assert.equal(result.signal, null, result.output)
     return result
   }
-  return { root, remote, env, tag, commit, git, release, readState, journals }
+  return { root, remote, env, tag, commit, git, release, readState, journals, advanceMain }
 }
 
 test('normalizes stable product versions with or without a v prefix', async () => {
@@ -131,6 +142,108 @@ test('publishes a normalized annotated tag on main without bumping unrelated fil
   assert.match(result.output, /v1.2.3.*released/)
   assert.ok(f.readState().calls.some(call => call.endpoint.includes('/actions/runs/123')))
   assert.ok(!f.readState().calls.some(call => call.method === 'POST' || call.method === 'DELETE'))
+  assert.ok(!existsSync(join(f.root, '.git/sqnsl-release.lock')))
+})
+
+test('switches from a feature branch and pulls main before releasing its latest commit', async t => {
+  const f = fixture(t)
+  const latest = f.advanceMain()
+  f.git('switch', '-c', 'feature-work')
+  writeFileSync(join(f.root, 'feature.txt'), 'mock feature work\n')
+  f.git('add', 'feature.txt')
+  f.git('commit', '--no-gpg-sign', '-m', 'Unmerged fixture feature')
+  const feature = f.git('rev-parse', 'HEAD')
+  f.git('config', 'pull.rebase', 'true')
+  f.git('config', 'pull.ff', 'false')
+
+  const result = await f.release()
+
+  assert.equal(result.code, 0, result.output)
+  assert.equal(f.git('branch', '--show-current'), 'main')
+  assert.equal(f.git('rev-parse', 'HEAD'), latest)
+  assert.equal(f.git('rev-parse', 'v1.2.3^{commit}'), latest)
+  assert.equal(f.git('rev-parse', 'refs/heads/feature-work'), feature)
+  assert.equal(f.git('--git-dir', f.remote, 'rev-parse', 'refs/heads/main'), latest)
+  assert.equal(f.git('status', '--porcelain'), '')
+  assert.equal(f.journals()[0].commit, latest)
+})
+
+for (const checkout of ['main', 'detached HEAD']) {
+  test(`synchronizes a clean ${checkout} before GitHub authorization`, async t => {
+    const f = fixture(t, { readOnly: true })
+    const latest = f.advanceMain()
+    if (checkout === 'detached HEAD') f.git('switch', '--detach', f.commit)
+
+    const result = await f.release()
+
+    assert.equal(result.code, 1, result.output)
+    assert.match(result.output, /Need push access/)
+    assert.equal(f.git('branch', '--show-current'), 'main')
+    assert.equal(f.git('rev-parse', 'HEAD'), latest)
+    assert.equal(f.journals()[0].commit, latest)
+    assert.equal(f.journals()[0].outcome, 'preflight-failed')
+    assert.throws(() => f.git('rev-parse', '--verify', 'refs/tags/v1.2.3'))
+  })
+}
+
+test('a divergent local main is not merged, rebased, reset, or published', async t => {
+  const f = fixture(t)
+  const latest = f.advanceMain()
+  writeFileSync(join(f.root, 'local-work.txt'), 'mock local main work\n')
+  f.git('add', 'local-work.txt')
+  f.git('commit', '--no-gpg-sign', '-m', 'Diverge fixture main')
+  const local = f.git('rev-parse', 'HEAD')
+  f.git('switch', '-c', 'feature-work', f.commit)
+  f.git('config', 'pull.rebase', 'true')
+  f.git('config', 'pull.ff', 'false')
+  f.git('config', 'merge.autoStash', 'true')
+
+  const result = await f.release()
+
+  assert.equal(result.code, 1, result.output)
+  assert.match(result.output, /fast-forward/)
+  assert.equal(f.git('branch', '--show-current'), 'main')
+  assert.equal(f.git('rev-parse', 'HEAD'), local)
+  assert.equal(f.git('--git-dir', f.remote, 'rev-parse', 'refs/heads/main'), latest)
+  assert.equal(f.git('stash', 'list'), '')
+  assert.equal(f.git('status', '--porcelain'), '')
+  assert.equal(f.readState().calls.length, 0)
+  assert.throws(() => f.git('rev-parse', '--verify', 'refs/tags/v1.2.3'))
+  assert.ok(!existsSync(join(f.root, '.git/sqnsl-release.lock')))
+})
+
+test('a failed pull stops before GitHub access or tag creation', async t => {
+  const f = fixture(t)
+  f.git('switch', '-c', 'feature-work')
+  f.git('config', 'remote.origin.uploadpack', 'false')
+
+  const result = await f.release()
+
+  assert.equal(result.code, 1, result.output)
+  assert.match(result.output, /git pull .*failed/)
+  assert.equal(f.git('branch', '--show-current'), 'main')
+  assert.equal(f.git('rev-parse', 'HEAD'), f.commit)
+  assert.equal(f.readState().calls.length, 0)
+  assert.equal(f.journals()[0].outcome, 'preflight-failed')
+  assert.throws(() => f.git('rev-parse', '--verify', 'refs/tags/v1.2.3'))
+  assert.ok(!existsSync(join(f.root, '.git/sqnsl-release.lock')))
+})
+
+test('main checked out in another worktree is left untouched and blocks release', async t => {
+  const f = fixture(t)
+  f.git('switch', '-c', 'feature-work')
+  const other = join(f.root, '..', 'other-main')
+  f.git('worktree', 'add', other, 'main')
+
+  const result = await f.release()
+
+  assert.equal(result.code, 1, result.output)
+  assert.match(result.output, /main.*already (used by worktree|checked out)/)
+  assert.equal(f.git('branch', '--show-current'), 'feature-work')
+  assert.equal(f.git('-C', other, 'rev-parse', 'HEAD'), f.commit)
+  assert.equal(f.git('-C', other, 'status', '--porcelain'), '')
+  assert.equal(f.readState().calls.length, 0)
+  assert.throws(() => f.git('rev-parse', '--verify', 'refs/tags/v1.2.3'))
   assert.ok(!existsSync(join(f.root, '.git/sqnsl-release.lock')))
 })
 
@@ -245,6 +358,8 @@ test('the one-off token remains available for cancellation and rollback without 
 
 test('failed CI rolls back only owned tags after proving publication was skipped', async t => {
   const f = fixture(t, { scenario: 'ci-failure' })
+  const latest = f.advanceMain()
+  f.git('switch', '-c', 'feature-work')
   const previous = f.git('rev-parse', 'refs/tags/v0.0.1')
   const result = await f.release()
   assert.equal(result.code, 1, result.output)
@@ -252,7 +367,9 @@ test('failed CI rolls back only owned tags after proving publication was skipped
   assert.equal(f.git('ls-remote', '--refs', 'origin', 'refs/tags/v1.2.3'), '')
   assert.throws(() => f.git('rev-parse', '--verify', 'refs/tags/v1.2.3'))
   assert.equal(f.git('rev-parse', 'refs/tags/v0.0.1'), previous)
-  assert.equal(f.git('rev-parse', 'HEAD'), f.commit)
+  assert.equal(f.git('branch', '--show-current'), 'main')
+  assert.equal(f.git('rev-parse', 'HEAD'), latest)
+  assert.equal(f.git('rev-parse', 'refs/heads/feature-work'), f.commit)
   assert.equal(f.git('status', '--porcelain'), '')
   assert.equal(f.journals()[0].outcome, 'rolled-back')
   assert.ok(f.readState().calls.some(call =>
@@ -370,13 +487,19 @@ test('duplicate historical run identities cannot be treated as separate safe att
   assert.equal(f.git('ls-remote', '--refs', 'origin', 'refs/tags/v1.2.3'), '')
 })
 
-test('invalid CLI arguments fail before GitHub access or tag creation', async t => {
+test('help and invalid CLI arguments leave the checkout and GitHub untouched', async t => {
   const f = fixture(t)
+  f.git('switch', '-c', 'feature-work')
+  const help = await f.release(['--help'])
+  assert.equal(help.code, 0, help.output)
+  assert.match(help.output, /Usage:/)
   for (const args of [[], ['1.2.3', 'extra'], ['01.2.3'], ['v1.2.3-rc.1'], ['1.2.3\n']]) {
     const result = await f.release(args)
     assert.equal(result.code, 64, result.output)
     assert.match(result.output, /Usage:/)
   }
+  assert.equal(f.git('branch', '--show-current'), 'feature-work')
+  assert.equal(f.git('rev-parse', 'HEAD'), f.commit)
   assert.equal(f.readState().calls.length, 0)
   assert.equal(f.journals().length, 0)
 })
@@ -429,28 +552,45 @@ test('version advancement compares numeric components, not strings or floating p
   assert.equal(accepted.code, 0, accepted.output)
 })
 
-test('dirty or non-main checkouts are preserved and rejected', async t => {
-  const dirty = fixture(t)
-  writeFileSync(join(dirty.root, 'uncommitted.txt'), 'mock work\n')
-  const first = await dirty.release()
-  assert.equal(first.code, 1, first.output)
-  assert.match(first.output, /Checkout is dirty/)
-  assert.equal(readFileSync(join(dirty.root, 'uncommitted.txt'), 'utf8'), 'mock work\n')
-  assert.equal(dirty.readState().calls.length, 0)
+for (const changes of ['untracked', 'unstaged', 'staged']) {
+  test(`a feature checkout with ${changes} changes is preserved without switching or stashing`, async t => {
+    const f = fixture(t)
+    f.git('switch', '-c', 'feature-work')
+    f.git('config', 'merge.autoStash', 'true')
+    const path = changes === 'untracked' ? 'uncommitted.txt' : 'version.go'
+    writeFileSync(join(f.root, path), 'mock work\n')
+    if (changes === 'staged') f.git('add', path)
+    const before = f.git('status', '--porcelain')
+
+    const result = await f.release()
+
+    assert.equal(result.code, 1, result.output)
+    assert.match(result.output, /Checkout is dirty/)
+    assert.equal(f.git('branch', '--show-current'), 'feature-work')
+    assert.equal(f.git('rev-parse', 'HEAD'), f.commit)
+    assert.equal(f.git('status', '--porcelain'), before)
+    assert.equal(readFileSync(join(f.root, path), 'utf8'), 'mock work\n')
+    assert.equal(f.git('stash', 'list'), '')
+    assert.equal(f.readState().calls.length, 0)
+  })
+}
+
+test('unpushed local main commits are preserved and rejected', async t => {
   const ahead = fixture(t)
   writeFileSync(join(ahead.root, 'unreleased.txt'), 'mock work\n')
   ahead.git('add', 'unreleased.txt')
   ahead.git('commit', '--no-gpg-sign', '-m', 'Unreleased fixture work')
   const head = ahead.git('rev-parse', 'HEAD')
-  const second = await ahead.release()
-  assert.equal(second.code, 1, second.output)
-  assert.match(second.output, /HEAD must equal current origin\/main/)
+  const result = await ahead.release()
+  assert.equal(result.code, 1, result.output)
+  assert.match(result.output, /HEAD must equal current origin\/main/)
   assert.equal(ahead.git('rev-parse', 'HEAD'), head)
   assert.equal(ahead.readState().calls.length, 0)
 })
 
 test('a lock owned by another invocation is never removed', async t => {
   const f = fixture(t)
+  f.git('switch', '-c', 'feature-work')
   const lock = join(f.root, '.git/sqnsl-release.lock')
   mkdirSync(lock)
   writeFileSync(join(lock, 'owner'), 'another-invocation')
@@ -458,6 +598,23 @@ test('a lock owned by another invocation is never removed', async t => {
   assert.equal(result.code, 1, result.output)
   assert.match(result.output, /Cannot acquire release lock/)
   assert.equal(readFileSync(join(lock, 'owner'), 'utf8'), 'another-invocation')
+  assert.equal(f.git('branch', '--show-current'), 'feature-work')
+  assert.equal(f.readState().calls.length, 0)
+})
+
+test('an active Git operation blocks release before switching branches', async t => {
+  const f = fixture(t)
+  f.git('switch', '-c', 'feature-work')
+  const mergeHead = join(f.root, '.git/MERGE_HEAD')
+  writeFileSync(mergeHead, `${f.commit}\n`)
+
+  const result = await f.release()
+
+  assert.equal(result.code, 1, result.output)
+  assert.match(result.output, /Finish the active Git operation first: MERGE_HEAD/)
+  assert.equal(f.git('branch', '--show-current'), 'feature-work')
+  assert.equal(readFileSync(mergeHead, 'utf8'), `${f.commit}\n`)
+  assert.equal(f.readState().calls.length, 0)
 })
 
 test('tag pushes do not follow unrelated annotated tags from Git configuration', async t => {
@@ -706,9 +863,11 @@ test('a rejected tag push is conservatively retained when workflow absence canno
 
 test('a push URL for another repository is rejected before remote access', async t => {
   const f = fixture(t)
+  f.git('switch', '-c', 'feature-work')
   f.git('config', 'remote.origin.pushurl', 'git@github.com:example/another-repository.git')
   const result = await f.release()
   assert.equal(result.code, 1, result.output)
   assert.match(result.output, /different push destination/)
+  assert.equal(f.git('branch', '--show-current'), 'feature-work')
   assert.equal(f.readState().calls.length, 0)
 })
