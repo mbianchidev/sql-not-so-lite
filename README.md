@@ -375,11 +375,13 @@ make proto
 
 ## Publishing a release
 
-From a clean checkout of current `origin/main`, run `./.release.sh 0.0.3`
+From a clean checkout of current `origin/main`, run `./release.sh 0.0.3`
 (`v0.0.3` is equivalent). The script advances the product version by creating
 and pushing its canonical annotated tag, then follows that exact Release
 workflow, including full CI. It does not edit the private frontend's version
-or push a commit to `main`.
+or push a commit to `main`. If GitHub authentication is missing or lacks access,
+it prompts for a hidden token used only for this invocation, without changing
+the saved `gh` login.
 
 Failures before publication cancel/wait for the workflow and remove only
 invocation-owned tags. Once publication may have started, the script retains
