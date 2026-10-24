@@ -146,8 +146,10 @@ at the expected object. A removed/replaced tag must not be revived by rerunning
 an old workflow.
 
 A read-only preflight validates the live tag, its ancestry from `main`, and
-stable-release tap credentials before starting the full CI matrix. Publication
-repeats these checks after CI to catch a tag removed or replaced during testing.
+whether stable-release tap credentials are configured before starting the full
+CI matrix. It receives only a credential-presence boolean, not the deploy key.
+Publication repeats these checks after CI to catch a tag removed or replaced
+during testing.
 Invalid releases therefore avoid expensive packaging and native checks, while
 valid releases pay for one additional Ubuntu checkout/job startup. This does not
 reduce macOS runner queue time. The two publication job names and their skipped
@@ -364,8 +366,10 @@ containers. All runtime tests use temporary data, not the user's databases.
 checkouts/bare remotes and a strict mocked `gh` executable, never live release
 resources. It covers normalization, monotonic bumps, conflicts, exact run
 selection, cancellation and timeout behavior, partial publication, cleanup
-failures, and concurrent tag ownership. These tests run in the lightweight
-web CI job on drafts as well as the full ready/tag suite.
+failures, and concurrent tag ownership. The shared workflow tag gate is tested
+against local remotes, including replacement tag objects pointing to the same
+commit. These tests run in the release-automation CI job on drafts as well as
+the full ready/tag suite.
 
 On a Mac without an existing Homebrew installation of sql-not-so-lite, run
 `bash scripts/test-homebrew.sh dist` to install/test/remove the generated formula

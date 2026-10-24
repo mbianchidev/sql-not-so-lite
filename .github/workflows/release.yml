@@ -29,9 +29,9 @@ jobs:
       - name: Require tap publication credentials for stable releases
         if: ${{ !contains(github.ref_name, '-') }}
         env:
-          TAP_KEY: ${{ secrets.HOMEBREW_TAP_SSH_KEY }}
+          TAP_KEY_CONFIGURED: ${{ secrets.HOMEBREW_TAP_SSH_KEY != '' }}
         run: |
-          if [ -z "$TAP_KEY" ]; then
+          if [ "$TAP_KEY_CONFIGURED" != true ]; then
             echo "::error::Set HOMEBREW_TAP_SSH_KEY to the Homebrew tap's write-scoped deploy key."
             exit 1
           fi
