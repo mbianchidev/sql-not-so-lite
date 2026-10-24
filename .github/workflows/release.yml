@@ -12,7 +12,32 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  preflight:
+    name: Validate release preconditions
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Require a live release tag from main
+        env:
+          RELEASE_REF: ${{ github.ref }}
+        run: bash scripts/verify-release-tag.sh
+
+      - name: Require tap publication credentials for stable releases
+        if: ${{ !contains(github.ref_name, '-') }}
+        env:
+          TAP_KEY_CONFIGURED: ${{ secrets.HOMEBREW_TAP_SSH_KEY != '' }}
+        run: |
+          if [ "$TAP_KEY_CONFIGURED" != true ]; then
+            echo "::error::Set HOMEBREW_TAP_SSH_KEY to the Homebrew tap's write-scoped deploy key."
+            exit 1
+          fi
+
   checks:
+    needs: preflight
     uses: ./.github/workflows/ci.yml
 
   publish:
@@ -36,15 +61,7 @@ jobs:
       - name: Require a live release tag from main
         env:
           RELEASE_REF: ${{ github.ref }}
-        run: |
-          git merge-base --is-ancestor HEAD origin/main
-          expected=$(git rev-parse --verify "$RELEASE_REF")
-          actual=$(git ls-remote --refs origin "$RELEASE_REF" | awk '{print $1}')
-          if [ "$actual" != "$expected" ] ||
-            [ "$(git rev-parse "$RELEASE_REF^{commit}")" != "$(git rev-parse HEAD)" ]; then
-            echo "::error::The release tag was removed or replaced. Refusing publication."
-            exit 1
-          fi
+        run: bash scripts/verify-release-tag.sh
 
       - name: Require tap publication credentials for stable releases
         if: ${{ !contains(github.ref_name, '-') }}

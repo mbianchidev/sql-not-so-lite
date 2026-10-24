@@ -136,6 +136,13 @@ CPU and memory. Target builds run at most two at a time without multiplying
 per-target package parallelism. PR matrices fail fast; release matrices collect
 all platform results. Docker builds retain their no-cache policy.
 
+Generic Linux jobs use `ubuntu-latest`, and native ARM Mac checks use
+`macos-latest`. Native Linux ARM64 and Intel Mac checks retain
+`ubuntu-24.04-arm` and `macos-15-intel`: GitHub currently offers no floating
+alias for either architecture. Replacing these with the generic latest labels
+would lose native architecture coverage. See the
+[hosted-runner label reference](https://docs.github.com/en/actions/reference/runners/github-hosted-runners).
+
 ## Publishing
 
 The `Release` workflow runs on `v*` tags. Before publishing it runs the same CI
@@ -144,6 +151,16 @@ and Debian/RPM installation/removal on AMD64 and ARM64. It then requires the
 tagged commit to be reachable from `main` and the original tag to still exist
 at the expected object. A removed/replaced tag must not be revived by rerunning
 an old workflow.
+
+A read-only preflight validates the live tag, its ancestry from `main`, and
+whether stable-release tap credentials are configured before starting the full
+CI matrix. It receives only a credential-presence boolean, not the deploy key.
+Publication repeats these checks after CI to catch a tag removed or replaced
+during testing.
+Invalid releases therefore avoid expensive packaging and native checks, while
+valid releases pay for one additional Ubuntu checkout/job startup. This does not
+reduce macOS runner queue time. The two publication job names and their skipped
+status on preflight failure remain compatible with automated rollback.
 
 After changes have been reviewed and merged, use a clean checkout and a new
 stable version. The script switches to `main` and pulls `origin/main` before
@@ -356,8 +373,10 @@ containers. All runtime tests use temporary data, not the user's databases.
 checkouts/bare remotes and a strict mocked `gh` executable, never live release
 resources. It covers normalization, monotonic bumps, conflicts, exact run
 selection, cancellation and timeout behavior, partial publication, cleanup
-failures, and concurrent tag ownership. These tests run in the lightweight
-web CI job on drafts as well as the full ready/tag suite.
+failures, and concurrent tag ownership. The shared workflow tag gate is tested
+against local remotes, including replacement tag objects pointing to the same
+commit. These tests run in the release-automation CI job on drafts as well as
+the full ready/tag suite.
 
 On a Mac without an existing Homebrew installation of sql-not-so-lite, run
 `bash scripts/test-homebrew.sh dist` to install/test/remove the generated formula
