@@ -109,6 +109,13 @@ lightweight checks. Superseded PR runs are canceled, but release runs are not.
 `CI result` rejects failed/canceled prerequisites and only accepts intentionally
 skipped distribution checks for drafts.
 
+Mocked release/formula tests run independently of Go and frontend checks. Snapshot
+packaging can start as soon as the Go and frontend jobs pass, without waiting for
+those tests. `CI result` still requires the release tests on every run, and release
+publication waits for the complete CI workflow, including all native checks.
+This shortens the packaging dependency chain at the cost of one additional
+Ubuntu job's checkout and Node.js setup.
+
 The frontend is built once per workflow revision and passed as a SHA-named
 artifact to snapshot packaging and release publication. Consumers download it
 outside the checkout, then the shared GUI build hook stages it after GoReleaser's

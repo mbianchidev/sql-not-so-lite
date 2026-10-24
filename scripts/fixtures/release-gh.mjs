@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { execFileSync } from 'node:child_process'
-import { readFileSync, writeFileSync } from 'node:fs'
+import { readFileSync, renameSync, writeFileSync } from 'node:fs'
 
 const path = process.env.SQNSL_RELEASE_MOCK_STATE
 const state = JSON.parse(readFileSync(path, 'utf8'))
@@ -41,8 +41,13 @@ function remoteTag() {
 }
 state.calls.push({ method, endpoint, remoteTag: remoteTag(), oneOffToken,
   githubTokenPresent: process.env.GITHUB_TOKEN !== undefined })
+function saveState() {
+  const temp = `${path}.${process.pid}.tmp`
+  writeFileSync(temp, JSON.stringify(state))
+  renameSync(temp, path)
+}
 function finish(body, status = 200) {
-  writeFileSync(path, JSON.stringify(state))
+  saveState()
   if (status >= 400) {
     console.error(`gh: Mock API failure (HTTP ${status})`)
     if (state.echoRejectedToken && process.env.GH_TOKEN) console.error(`Mock rejected credential: ${process.env.GH_TOKEN}`)
@@ -108,13 +113,13 @@ const previousRun = previousRuns().find(run => endpoint === `${repo}/actions/run
 
 if (endpoint === repo) {
   if (state.authRequired && !oneOffToken) {
-    writeFileSync(path, JSON.stringify(state))
+    saveState()
     console.error('gh: Authentication required')
     process.exit(4)
   }
   if (state.authStatus && !oneOffToken) finish(null, state.authStatus)
   if (state.hangAPI) {
-    writeFileSync(path, JSON.stringify(state))
+    saveState()
     await new Promise(resolve => setTimeout(resolve, 120_000))
   }
   finish({ full_name: 'mbianchidev/sql-not-so-lite', default_branch: 'main',
