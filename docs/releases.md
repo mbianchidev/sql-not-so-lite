@@ -145,6 +145,14 @@ tagged commit to be reachable from `main` and the original tag to still exist
 at the expected object. A removed/replaced tag must not be revived by rerunning
 an old workflow.
 
+A read-only preflight validates the live tag, its ancestry from `main`, and
+stable-release tap credentials before starting the full CI matrix. Publication
+repeats these checks after CI to catch a tag removed or replaced during testing.
+Invalid releases therefore avoid expensive packaging and native checks, while
+valid releases pay for one additional Ubuntu checkout/job startup. This does not
+reduce macOS runner queue time. The two publication job names and their skipped
+status on preflight failure remain compatible with automated rollback.
+
 After changes have been reviewed and merged, use a clean checkout and a new
 stable version. The script switches to `main` and pulls `origin/main` before
 release checks:

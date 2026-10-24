@@ -111,6 +111,14 @@ function fixture(t, options = {}) {
   return { root, remote, env, tag, commit, git, release, readState, journals, advanceMain }
 }
 
+function verifyReleaseTag(f, ref = 'refs/tags/v0.0.1') {
+  execFileSync('bash', [join(source, 'scripts/verify-release-tag.sh')], {
+    cwd: f.root,
+    env: { ...f.env, RELEASE_REF: ref },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
+}
+
 test('normalizes stable product versions with or without a v prefix', async () => {
   const { normalizeVersion } = await import('./release.mjs')
   assert.equal(normalizeVersion('1.2.3'), 'v1.2.3')
@@ -124,6 +132,70 @@ test('normalizes stable product versions with or without a v prefix', async () =
 
 test('the root release entry point is executable', () => {
   assert.ok(statSync(join(source, 'release.sh')).mode & 0o111)
+})
+
+test('release tag gate accepts a live annotated tag from main without changing it', t => {
+  const f = fixture(t)
+  const before = f.git('rev-parse', 'refs/tags/v0.0.1')
+  verifyReleaseTag(f)
+  assert.equal(f.git('rev-parse', 'refs/tags/v0.0.1'), before)
+  assert.equal(f.git('ls-remote', '--refs', 'origin', 'refs/tags/v0.0.1').split(/\s/)[0], before)
+  assert.equal(f.git('status', '--porcelain'), '')
+})
+
+test('release tag gate accepts a live lightweight tag', t => {
+  const f = fixture(t)
+  f.git('tag', '--no-sign', f.tag)
+  f.git('push', 'origin', `refs/tags/${f.tag}`)
+  verifyReleaseTag(f, `refs/tags/${f.tag}`)
+})
+
+test('release tag gate accepts a tagged ancestor after main advances', t => {
+  const f = fixture(t)
+  f.advanceMain()
+  verifyReleaseTag(f)
+})
+
+test('release tag gate rejects a tag deleted after checkout', t => {
+  const f = fixture(t)
+  f.git('push', 'origin', ':refs/tags/v0.0.1')
+  assert.throws(() => verifyReleaseTag(f), /release tag was removed or replaced/)
+})
+
+test('release tag gate rejects a different tag object pointing to the same commit', t => {
+  const f = fixture(t)
+  f.git('tag', '--no-sign', '-a', f.tag, '-m', 'Replacement fixture tag')
+  f.git('push', 'origin', `refs/tags/${f.tag}`)
+  const replacement = f.git('rev-parse', `refs/tags/${f.tag}`)
+  f.git('--git-dir', f.remote, 'update-ref', 'refs/tags/v0.0.1', replacement)
+  assert.throws(() => verifyReleaseTag(f), /release tag was removed or replaced/)
+})
+
+test('release tag gate rejects checkout of a different main commit', t => {
+  const f = fixture(t)
+  f.advanceMain()
+  f.git('switch', 'remote-update')
+  assert.throws(() => verifyReleaseTag(f), /release tag was removed or replaced/)
+})
+
+test('release tag gate rejects an unmerged tagged commit', t => {
+  const f = fixture(t)
+  f.git('switch', '-c', 'unmerged')
+  f.git('commit', '--no-gpg-sign', '--allow-empty', '-m', 'Unmerged fixture commit')
+  f.git('tag', '--no-sign', f.tag)
+  f.git('push', 'origin', `refs/tags/${f.tag}`)
+  assert.throws(() => verifyReleaseTag(f, `refs/tags/${f.tag}`), /not reachable from origin\/main/)
+})
+
+test('release tag gate fails closed when the remote cannot be read', t => {
+  const f = fixture(t)
+  f.git('remote', 'set-url', 'origin', join(f.root, 'missing.git'))
+  assert.throws(() => verifyReleaseTag(f), /does not appear to be a git repository/)
+})
+
+test('release tag gate requires an explicit tag ref', t => {
+  const f = fixture(t)
+  assert.throws(() => verifyReleaseTag(f, ''), /Set RELEASE_REF to the release tag ref/)
 })
 
 test('publishes a normalized annotated tag on main without bumping unrelated files', async t => {
