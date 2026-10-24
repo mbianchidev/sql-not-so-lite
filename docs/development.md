@@ -4,7 +4,7 @@
 
 ## Setup
 
-Use Git, Make, Go **1.27.3+**, and Node.js **22.13+ within 22.x, or 24+**, with npm. The application combines Go, pure-Go SQLite, gRPC/Protobuf, and a React/TypeScript/Vite frontend.
+Use Git, Make, Go **1.27.3+**, and Node.js **26.12.1** with npm, as pinned in [`.node-version`](../.node-version). CI and the Docker GUI builder use this same stable Node.js version. The minimum source-build requirement remains **22.13+ within 22.x, or 24+**. The application combines Go, pure-Go SQLite, gRPC/Protobuf, and a React/TypeScript/Vite frontend.
 
 From a clone of the repository:
 

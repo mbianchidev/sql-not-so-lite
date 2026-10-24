@@ -176,7 +176,8 @@ safe and prints usage. The executable shell entry point delegates to
 
 ### Prerequisites and version bump
 
-Requires Git, Node.js 22+, and a recent GitHub CLI (`gh`). The
+Requires Git, Node.js 22+, and a recent GitHub CLI (`gh`). Use Node.js **26.12.1**,
+pinned in [`.node-version`](../.node-version), to match CI and the release tools. The
 operator needs source-repository push access, Actions write access for
 cancellation, read access to the tap, and GHCR `read:packages` access. Git
 authentication and a Git committer identity must already work.
@@ -355,7 +356,7 @@ Macs.
 
 ## Local verification
 
-With Go, Node.js 22+, GoReleaser 2.18.3, and a running Docker/Buildx environment:
+With Go, the pinned Node.js **26.12.1**, GoReleaser 2.18.3, and a running Docker/Buildx environment:
 
 ```bash
 make test-release
