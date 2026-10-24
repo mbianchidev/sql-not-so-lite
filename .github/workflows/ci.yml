@@ -48,10 +48,6 @@ jobs:
           cache: npm
           cache-dependency-path: web/package-lock.json
 
-      - name: Test release automation and formula generation
-        working-directory: ${{ github.workspace }}
-        run: node --test scripts/release.test.mjs scripts/homebrew.test.mjs
-
       - name: Install dependencies
         run: npm ci
 
@@ -67,6 +63,19 @@ jobs:
           path: internal/server/static
           if-no-files-found: error
           retention-days: 3
+
+  release-tests:
+    name: Release automation tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v6
+        with:
+          node-version: 22
+
+      - name: Test release automation and formula generation
+        run: node --test scripts/release.test.mjs scripts/homebrew.test.mjs
 
   packages:
     name: Release packaging
@@ -182,7 +191,7 @@ jobs:
   result:
     name: CI result
     if: ${{ always() }}
-    needs: [go, web, packages, native-packages]
+    needs: [go, web, release-tests, packages, native-packages]
     runs-on: ubuntu-latest
     env:
       JOBS: ${{ toJSON(needs) }}
@@ -195,7 +204,10 @@ jobs:
           const full = process.env.FULL_VALIDATION
           if (!['true', 'false'].includes(full)) throw new Error('Invalid CI validation mode')
           const packaging = full === 'true' ? 'success' : 'skipped'
-          const expected = {go: 'success', web: 'success', packages: packaging, 'native-packages': packaging}
+          const expected = {
+            go: 'success', web: 'success', 'release-tests': 'success',
+            packages: packaging, 'native-packages': packaging,
+          }
           for (const [name, result] of Object.entries(expected)) {
             if (jobs[name]?.result !== result) {
               throw new Error(`${name}: expected ${result}, got ${jobs[name]?.result}`)
