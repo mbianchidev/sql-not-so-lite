@@ -136,6 +136,13 @@ CPU and memory. Target builds run at most two at a time without multiplying
 per-target package parallelism. PR matrices fail fast; release matrices collect
 all platform results. Docker builds retain their no-cache policy.
 
+Generic Linux jobs use `ubuntu-latest`, and native ARM Mac checks use
+`macos-latest`. Native Linux ARM64 and Intel Mac checks retain
+`ubuntu-24.04-arm` and `macos-15-intel`: GitHub currently offers no floating
+alias for either architecture. Replacing these with the generic latest labels
+would lose native architecture coverage. See the
+[hosted-runner label reference](https://docs.github.com/en/actions/reference/runners/github-hosted-runners).
+
 ## Publishing
 
 The `Release` workflow runs on `v*` tags. Before publishing it runs the same CI
