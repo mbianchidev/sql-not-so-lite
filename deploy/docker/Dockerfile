@@ -1,4 +1,4 @@
-FROM node:22-alpine AS gui-builder
+FROM node:26.12.1-alpine AS gui-builder
 WORKDIR /app/web
 COPY web/package*.json web/.npmrc ./
 COPY web/scripts/ ./scripts/

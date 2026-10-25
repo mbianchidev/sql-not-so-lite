@@ -6,7 +6,7 @@
 
 Native builds and release targets support **macOS and Linux on AMD64 or ARM64**. Service integration uses launchd on macOS and per-user systemd on Linux. Windows is not a supported build/release target.
 
-Source builds require Git, Make, Go **1.27.3+**, and Node.js with npm. Use **Node.js 22.13+ within 22.x, or 24+** to satisfy both frontend build and lint requirements. SQLite uses a pure-Go driver: no CGO or separate database-server installation is required.
+Source builds require Git, Make, Go **1.27.3+**, and Node.js with npm. Use **Node.js 26.12.1**, pinned in [`.node-version`](../.node-version), to match CI and the Docker GUI builder. The minimum requirement remains **22.13+ within 22.x, or 24+** to satisfy both frontend build and lint requirements. SQLite uses a pure-Go driver: no CGO or separate database-server installation is required.
 
 Optional tools are documented with their workflows: Docker/Compose for containers, `grpcurl` for [gRPC examples](api.md), and protobuf tooling for [development](development.md).
 
