@@ -11,17 +11,20 @@ import { CodeEditor } from './CodeEditor';
 import { TabBar } from './TabBar';
 import { Icon } from './Icon';
 import { APIExposurePanel } from './APIExposurePanel';
+import { formatInspectionState } from '../utils/format';
 
 interface Props {
   database: DiscoveredDB;
   darkMode: boolean;
+  onProjectionChange: (database: DiscoveredDB) => Promise<void>;
 }
 
 type InspectorTab = 'browse' | 'query' | 'history';
 
 const PAGE_SIZE = 100;
 
-export function DiscoveredInspector({ database, darkMode }: Props) {
+export function DiscoveredInspector({ database, darkMode, onProjectionChange }: Props) {
+  const inspection = database.Inspection;
   const [activeTab, setActiveTab] = useState<InspectorTab>('browse');
   const [showAPI, setShowAPI] = useState(false);
   const [tables, setTables] = useState<TableInfo[]>([]);
@@ -31,12 +34,16 @@ export function DiscoveredInspector({ database, darkMode }: Props) {
   const [loadingSchema, setLoadingSchema] = useState(false);
   const [loadingTable, setLoadingTable] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [sql, setSql] = useState('SELECT * FROM sqlite_master WHERE type = \'table\' ORDER BY name;');
+  const [sql, setSql] = useState(inspection ? 'SELECT * FROM key_metadata ORDER BY ordinal;' : 'SELECT * FROM sqlite_master WHERE type = \'table\' ORDER BY name;');
   const [queryResult, setQueryResult] = useState<QueryResult | null>(null);
   const [queryError, setQueryError] = useState<string | null>(null);
   const [runningQuery, setRunningQuery] = useState(false);
   const sqlRef = useRef(sql);
   const running = useRef(false);
+  const requestEpoch = useRef(0);
+  const projectionAbort = useRef<AbortController | null>(null);
+  const [projectionBusy, setProjectionBusy] = useState(false);
+  const [sensitiveConsent, setSensitiveConsent] = useState(false);
 
   const selected = useMemo(
     () => tables.find((table) => table.Name === selectedTable) ?? null,
@@ -47,8 +54,10 @@ export function DiscoveredInspector({ database, darkMode }: Props) {
     if (!database.Available) return;
     setLoadingSchema(true);
     setError(null);
+    const epoch = requestEpoch.current;
     try {
       const schema = await api.getDiscoveredSchema(database.ID);
+      if (epoch !== requestEpoch.current) return;
       setTables(schema);
       setSelectedTable((current) => (
         current && schema.some((table) => table.Name === current)
@@ -56,11 +65,16 @@ export function DiscoveredInspector({ database, darkMode }: Props) {
           : schema[0]?.Name ?? null
       ));
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to inspect database schema');
+      if (epoch === requestEpoch.current) setError(err instanceof Error ? err.message : 'Failed to inspect database schema');
     } finally {
-      setLoadingSchema(false);
+      if (epoch === requestEpoch.current) setLoadingSchema(false);
     }
   }, [database.Available, database.ID]);
+
+  useEffect(() => () => {
+    requestEpoch.current++;
+    projectionAbort.current?.abort();
+  }, []);
 
   useEffect(() => {
     setActiveTab('browse');
@@ -109,34 +123,94 @@ export function DiscoveredInspector({ database, darkMode }: Props) {
     setRunningQuery(true);
     setQueryError(null);
     setQueryResult(null);
+    const epoch = requestEpoch.current;
     try {
-      setQueryResult(await api.queryDiscovered(database.ID, statement));
+      const result = await api.queryDiscovered(database.ID, statement);
+      if (epoch === requestEpoch.current) setQueryResult(result);
     } catch (err) {
-      setQueryError(err instanceof Error ? err.message : 'Query failed');
+      if (epoch === requestEpoch.current) setQueryError(err instanceof Error ? err.message : 'Query failed');
     } finally {
       running.current = false;
       setRunningQuery(false);
     }
   };
 
+  const refreshProjection = async (includeData: boolean) => {
+    if (!inspection || projectionAbort.current || (includeData && !sensitiveConsent)) return;
+    const controller = new AbortController();
+    projectionAbort.current = controller;
+    requestEpoch.current++;
+    setProjectionBusy(true);
+    setActiveTab('browse');
+    setTables([]);
+    setSelectedTable(null);
+    setTableData(null);
+    setQueryResult(null);
+    setQueryError(null);
+    setError(null);
+    setLoadingSchema(false);
+    if (!includeData) setSensitiveConsent(false);
+    try {
+      const projection = await api.fetchEtcqliteProjection(includeData, controller.signal);
+      await onProjectionChange(projection);
+    } catch (err) {
+      if (!controller.signal.aborted) {
+        setError(err instanceof Error ? err.message : 'Etcqlite projection refresh failed');
+      }
+    } finally {
+      projectionAbort.current = null;
+      setProjectionBusy(false);
+    }
+  };
+
   return (
     <section className="discovered-inspector" aria-label={`Inspect ${database.Name}`}>
       <div className="inspector-header">
-        <div><h3>{database.Name}</h3><p>No writes through this inspector</p></div>
-        <div className="workspace-heading-actions"><span className="read-only-badge"><Icon name="lock" /> Read-only inspector</span><button className="btn-sm" disabled={!database.Available || loadingSchema} onClick={() => setShowAPI((current) => !current)} aria-expanded={showAPI}><Icon name="terminal" /> Expose API</button></div>
+        <div><h3>{database.Name}</h3><p>{inspection ? 'Immutable inspection projection, not the internal store' : 'No writes through this inspector'}</p></div>
+        <div className="workspace-heading-actions"><span className="read-only-badge"><Icon name="lock" /> Read-only inspector</span>{!inspection && <button className="btn-sm" disabled={!database.Available || loadingSchema} onClick={() => setShowAPI((current) => !current)} aria-expanded={showAPI}><Icon name="terminal" /> Expose API</button>}</div>
       </div>
+
+      {inspection && (
+        <div className="projection-summary">
+          <div className="projection-status" role="status">
+            <strong>{formatInspectionState(inspection.state)}</strong>
+            <span>Captured revision {inspection.revision}</span>
+            <span>Fetched {new Date(inspection.fetched_at).toLocaleString()}. Rows are from this capture, never live data.</span>
+          </div>
+          <dl className="projection-facts">
+            <div><dt>Cluster ID</dt><dd>{inspection.cluster_id}</dd></div>
+            <div><dt>Member ID</dt><dd>{inspection.member_id}</dd></div>
+            <div><dt>Compact revision</dt><dd>{inspection.compact_revision}</dd></div>
+            <div><dt>Source schema</dt><dd>{inspection.schema_version}</dd></div>
+            <div><dt>Engine / API</dt><dd>{inspection.engine_version} / {inspection.api_version}</dd></div>
+            <div><dt>Build</dt><dd>{inspection.build}{inspection.dirty ? ' (dirty)' : ''}</dd></div>
+            <div><dt>Configuration ID</dt><dd>{inspection.configuration_id ?? 'Local mode'}</dd></div>
+            <div><dt>Source revision at last check</dt><dd>{inspection.source_revision}</dd></div>
+          </dl>
+          <p className="api-warning">Not a backup. Projection rows do not establish consensus, high availability or recovery readiness. Internal authentication, protocol commands and peer credentials are never projected.</p>
+          {inspection.includes_data && <p className="api-warning">Sensitive projection active. Raw user keys and values may contain application secrets. Browsing and exports remain sensitive until you refresh metadata, remove the projection or restart the daemon.</p>}
+          <form className="inspection-consent" onSubmit={(event) => { event.preventDefault(); void refreshProjection(true); }}>
+            <div className="api-copy-actions">
+              <button type="button" className="btn-sm" onClick={() => void refreshProjection(false)} disabled={projectionBusy || inspection.state === 'disabled'}><Icon name="refresh" /> Refresh metadata</button>
+              <button type="submit" className="btn-sm" disabled={!sensitiveConsent || projectionBusy || inspection.state === 'disabled'}><Icon name="lock" /> Load sensitive keys and values</button>
+            </div>
+            <label><input type="checkbox" checked={sensitiveConsent} onChange={(event) => setSensitiveConsent(event.target.checked)} disabled={projectionBusy || inspection.state === 'disabled'} /> I consent to loading sensitive raw keys and values.</label>
+          </form>
+          {projectionBusy && <div className="loading" role="status">Fetching a new immutable projection...</div>}
+        </div>
+      )}
 
       <TabBar<InspectorTab> id={`inspector-${database.ID}`} label="Database inspector" active={activeTab} onChange={setActiveTab} tabs={[
         { value: 'browse', label: 'Schema & data', icon: 'table' },
-        { value: 'query', label: 'SELECT query', icon: 'terminal', disabled: !database.Available },
-        { value: 'history', label: 'History', icon: 'history' },
+        { value: 'query', label: 'SELECT query', icon: 'terminal', disabled: !database.Available || projectionBusy },
+        ...(!inspection ? [{ value: 'history' as const, label: 'History', icon: 'history' as const }] : []),
       ]} />
 
       <div className="inspector-content" role="tabpanel" id={`inspector-${database.ID}-panel`} aria-labelledby={`inspector-${database.ID}-tab-${activeTab}`} tabIndex={0}>
-      {showAPI && <APIExposurePanel source={{ discovered_id: database.ID }} tables={tables} onClose={() => setShowAPI(false)} />}
+      {showAPI && !inspection && <APIExposurePanel source={{ discovered_id: database.ID }} tables={tables} onClose={() => setShowAPI(false)} />}
       {!database.Available && activeTab !== 'history' && (
         <div className="inspector-unavailable">
-          The source file is unavailable. Restore it to inspect its current contents.
+          {inspection ? 'The cached projection is unavailable or inspection is disabled. Fetch a new projection after reconnecting; the internal store is never opened.' : 'The source file is unavailable. Restore it to inspect its current contents.'}
         </div>
       )}
       {error && <div className="error-msg" role="alert">{error}</div>}

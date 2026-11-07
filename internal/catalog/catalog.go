@@ -3,6 +3,7 @@ package catalog
 import (
 	"crypto/sha256"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -30,6 +31,27 @@ type DiscoveredDB struct {
 	Priority      string
 	Favorite      bool
 	Available     bool
+	Inspection    *EtcqliteInspection
+}
+
+type EtcqliteInspection struct {
+	Endpoint        string    `json:"endpoint"`
+	ClusterID       string    `json:"cluster_id"`
+	MemberID        string    `json:"member_id"`
+	ETag            string    `json:"etag"`
+	Revision        string    `json:"revision"`
+	CompactRevision string    `json:"compact_revision"`
+	SourceRevision  string    `json:"source_revision"`
+	SchemaVersion   uint32    `json:"schema_version"`
+	EngineVersion   string    `json:"engine_version"`
+	APIVersion      string    `json:"api_version"`
+	Build           string    `json:"build"`
+	Dirty           bool      `json:"dirty"`
+	ConfigurationID *uint32   `json:"configuration_id"`
+	IncludesData    bool      `json:"includes_data"`
+	State           string    `json:"state"`
+	FetchedAt       time.Time `json:"fetched_at"`
+	CheckedAt       time.Time `json:"checked_at"`
 }
 
 type ReplicationState struct {
@@ -93,6 +115,7 @@ CREATE TABLE IF NOT EXISTS discovered_databases (
 	priority       TEXT DEFAULT 'other',
 	favorite       INTEGER NOT NULL DEFAULT 0,
 	available      INTEGER NOT NULL DEFAULT 1,
+	inspection_json TEXT NOT NULL DEFAULT '',
 	CHECK(status IN ('discovered','replicating','paused','error','archived')),
 	CHECK(priority IN ('docker','workspace','copilot','app_data','other'))
 );
@@ -199,7 +222,7 @@ type scanner interface {
 
 const discoveredCols = `id, name, source_path, sqlite_version, page_size, journal_mode,
 	size_bytes, last_modified, first_seen, last_scanned, status,
-	error_message, github_repo, github_url, priority, favorite, available`
+	error_message, github_repo, github_url, priority, favorite, available, inspection_json`
 
 func scanDiscovered(s scanner) (*DiscoveredDB, error) {
 	var d DiscoveredDB
@@ -207,6 +230,7 @@ func scanDiscovered(s scanner) (*DiscoveredDB, error) {
 	var pageSize sql.NullInt64
 	var firstSeen, lastScanned string
 	var favorite, available int
+	var inspectionJSON string
 
 	err := s.Scan(
 		&d.ID, &d.Name, &d.SourcePath,
@@ -216,6 +240,7 @@ func scanDiscovered(s scanner) (*DiscoveredDB, error) {
 		&d.Status, &errorMessage,
 		&githubRepo, &githubURL, &priority,
 		&favorite, &available,
+		&inspectionJSON,
 	)
 	if err != nil {
 		return nil, err
@@ -235,6 +260,11 @@ func scanDiscovered(s scanner) (*DiscoveredDB, error) {
 	d.Available = available != 0
 	if d.Priority == "" {
 		d.Priority = "other"
+	}
+	if inspectionJSON != "" {
+		if err := json.Unmarshal([]byte(inspectionJSON), &d.Inspection); err != nil || d.Inspection == nil {
+			return nil, fmt.Errorf("catalog: invalid inspection metadata")
+		}
 	}
 	return &d, nil
 }
@@ -303,6 +333,11 @@ func ensureDiscoveryColumns(db *sql.DB) error {
 			return fmt.Errorf("catalog: add available column: %w", err)
 		}
 	}
+	if !columns["inspection_json"] {
+		if _, err := tx.Exec(`ALTER TABLE discovered_databases ADD COLUMN inspection_json TEXT NOT NULL DEFAULT ''`); err != nil {
+			return fmt.Errorf("catalog: add inspection metadata: %w", err)
+		}
+	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("catalog: commit discovery migration: %w", err)
 	}
@@ -342,14 +377,18 @@ func (c *Catalog) UpsertDiscovered(d *DiscoveredDB) (int64, error) {
 	if priority == "" {
 		priority = "other"
 	}
+	inspectionJSON, err := encodeInspection(d.Inspection)
+	if err != nil {
+		return 0, err
+	}
 
 	var id int64
 	err = c.db.QueryRow(`
 		INSERT INTO discovered_databases
 			(name, source_path, sqlite_version, page_size, journal_mode,
 			 size_bytes, last_modified, first_seen, last_scanned, status,
-			 error_message, github_repo, github_url, priority)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			 error_message, github_repo, github_url, priority, inspection_json)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(source_path) DO UPDATE SET
 			name           = excluded.name,
 			sqlite_version = excluded.sqlite_version,
@@ -363,6 +402,7 @@ func (c *Catalog) UpsertDiscovered(d *DiscoveredDB) (int64, error) {
 			github_repo    = excluded.github_repo,
 			github_url     = excluded.github_url,
 			priority       = excluded.priority,
+			inspection_json = CASE WHEN excluded.inspection_json != '' THEN excluded.inspection_json ELSE discovered_databases.inspection_json END,
 			available      = 1
 		RETURNING id`,
 		d.Name, d.SourcePath,
@@ -370,12 +410,56 @@ func (c *Catalog) UpsertDiscovered(d *DiscoveredDB) (int64, error) {
 		d.SizeBytes, nullTimeStr(d.LastModified),
 		firstSeen, lastScanned,
 		status, nullStr(d.ErrorMessage),
-		nullStr(d.GitHubRepo), nullStr(d.GitHubURL), priority,
+		nullStr(d.GitHubRepo), nullStr(d.GitHubURL), priority, inspectionJSON,
 	).Scan(&id)
 	if err != nil {
 		return 0, fmt.Errorf("catalog: upsert discovered: %w", err)
 	}
 	return id, nil
+}
+
+func encodeInspection(inspection *EtcqliteInspection) (string, error) {
+	if inspection == nil {
+		return "", nil
+	}
+	data, err := json.Marshal(inspection)
+	if err != nil {
+		return "", fmt.Errorf("catalog: encode inspection metadata: %w", err)
+	}
+	return string(data), nil
+}
+
+func (c *Catalog) UpdateInspection(d *DiscoveredDB) error {
+	if d.Inspection == nil || d.ID <= 0 {
+		return fmt.Errorf("catalog: inspection metadata and database ID required")
+	}
+	data, err := encodeInspection(d.Inspection)
+	if err != nil {
+		return err
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	status := d.Status
+	if status == "" {
+		status = "discovered"
+	}
+	result, err := c.db.Exec(`
+		UPDATE discovered_databases SET source_path=?, sqlite_version=?, page_size=?, journal_mode=?,
+			size_bytes=?, last_modified=?, status=?, error_message=?, available=?, inspection_json=?
+		WHERE id=? AND inspection_json != ''
+	`, d.SourcePath, nullStr(d.SQLiteVersion), nullInt(d.PageSize), nullStr(d.JournalMode),
+		d.SizeBytes, nullTimeStr(d.LastModified), status, nullStr(d.ErrorMessage), d.Available, data, d.ID)
+	if err != nil {
+		return fmt.Errorf("catalog: update inspection: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("catalog: update inspection rows: %w", err)
+	}
+	if affected == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
 }
 
 func (c *Catalog) availableDiscoveredName(name, sourcePath string) (string, error) {

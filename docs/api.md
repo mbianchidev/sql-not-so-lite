@@ -117,6 +117,42 @@ The existing query endpoints retain their original response format. CRUD endpoin
 
 REST restore targets the replica, unlike the CLI's default source restore. Read [recovery precautions](usage.md#snapshot-recovery) before using either path.
 
+### Optional Etcqlite projections
+
+These routes require workspace admin authentication, including on loopback, and the [explicitly enabled integration](configuration.md#optional-etcqlite-inspection). Scoped CRUD tokens cannot authorize them.
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET | `/api/etcqlite` | Read configuration/consent state; after consent, check authenticated discovery and report cached projection freshness |
+| POST | `/api/etcqlite/projections` | Fetch a new projection with explicit inspection consent; returns the existing discovered-database response |
+| DELETE | `/api/discovered/:id` | Remove the catalog entry, its private projection, and sensitive-data permission; never changes Etcqlite |
+
+Initial metadata-only inspection:
+
+```bash
+curl -fsS http://localhost:9147/api/etcqlite/projections \
+  -H "Authorization: Bearer $SQNSL_AUTH_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"ack_read_only_inspection":true}'
+```
+
+Sensitive user KV inspection requires **both** flags:
+
+```bash
+curl -fsS http://localhost:9147/api/etcqlite/projections \
+  -H "Authorization: Bearer $SQNSL_AUTH_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"ack_read_only_inspection":true,"include_data":true,"ack_sensitive_data":true}'
+```
+
+Either sensitive flag alone is rejected, not treated as permission. Repeating a metadata-only request revokes sensitive access before attempting the upstream fetch. Creation returns `201`; replacement preserves the catalog ID/favorites and returns `200`.
+
+Inspect the returned `id` through the existing `/api/discovered/:id/schema`, `/table` and `/query` routes. Projection responses include `kind:"etcqlite"` and an `inspection` object with decimal-string `cluster_id`, `member_id`, `revision`, `compact_revision` and `source_revision`, schema/engine/API/build metadata, timestamps, `includes_data` and `state`. `source_path` is the configured endpoint, not a private artifact or internal store path. Query cells remain strings; projection BLOBs use `hex:` encoding. Projections are limited to 64 MiB, query cell payload to 1 MiB, and SELECT previews to 1,000 rows with a 10-second query timeout.
+
+`GET /api/etcqlite` does not contact the endpoint before consent. After consent, source failures return status `200` with truthful `state:"disconnected"` and an error, while cached metadata remains separately inspectable. It does not report the standalone daemon as failed. Projection fetches return `400` for invalid/partial consent, `401` for missing workspace authentication, `404` when disabled, `412` for a changed identity, `502` for an unsafe/incompatible artifact, or `503` for an unavailable endpoint, credentials or cache.
+
+Upstream discovery is authenticated `GET /etcqlite/v1/discovery`; projection creation is `POST /etcqlite/v1/projections` with its exact ETag in `If-Match`. Upstream errors are not retried or displayed as response payloads. Native snapshots are never requested. Projections, native Etcqlite schemas and sensitive `bbolt-interchange` staging artifacts cannot be exposed through CRUD, opened writable, replicated, or restored as generic SQLite; protected discovery operations return `403`. Interchange protection uses only the `interchange_meta` schema/marker, without reading sensitive entry rows.
+
 ### Health and statistics
 
 | Method | Path | Purpose |

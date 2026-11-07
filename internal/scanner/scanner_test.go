@@ -22,6 +22,46 @@ func TestScanContextStopsWhenCancelled(t *testing.T) {
 	}
 }
 
+func TestScanSkipsEtcqliteWithoutFilenameHeuristics(t *testing.T) {
+	root := t.TempDir()
+	ordinary := filepath.Join(root, "node.db")
+	createTestDB(t, ordinary)
+	projection := filepath.Join(root, "renamed.sqlite")
+	db, err := sql.Open("sqlite", projection)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`
+		CREATE TABLE projection_metadata(kind TEXT,format INTEGER,cluster_id BLOB,member_id BLOB,revision INTEGER,compact_revision INTEGER,source_schema INTEGER,includes_data INTEGER);
+		INSERT INTO projection_metadata VALUES ('read-only-inspection',1,x'0000000000000001',x'0000000000000002',0,0,2,0);
+	`); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	db.Close()
+	interchange := filepath.Join(root, "renamed-interchange.db")
+	db, err = sql.Open("sqlite", interchange)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`
+		CREATE TABLE interchange_meta(kind TEXT,format INTEGER,reference TEXT,revision INTEGER,compact_revision INTEGER);
+		INSERT INTO interchange_meta VALUES ('bbolt-interchange',2,'3.7.3',42,-1);
+		CREATE TABLE interchange_buckets(name BLOB PRIMARY KEY);
+		CREATE TABLE interchange_entries(bucket BLOB,key BLOB,value BLOB,PRIMARY KEY(bucket,key));
+	`); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	db.Close()
+	cfg := config.DefaultConfig().Scanner
+	cfg.ScanRoot = root
+	files, err := New(cfg).Scan()
+	if err != nil || len(files) != 1 || filepath.Base(files[0].Path) != "node.db" {
+		t.Fatalf("protected artifact scanned or ordinary node.db excluded: %+v, %v", files, err)
+	}
+}
+
 func createTestDB(t *testing.T, path string) {
 	t.Helper()
 	db, err := sql.Open("sqlite", path)

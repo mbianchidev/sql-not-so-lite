@@ -87,6 +87,22 @@ These priorities do not expose files inside unmounted containers or VMs. Native 
 
 For each discovered file, the scanner walks up the directory tree looking for `.git/config`. It parses a GitHub remote into an `owner/repo` association stored in the catalog. This is a local filesystem heuristic, not a GitHub API lookup.
 
+## Optional Etcqlite inspection
+
+Configure the [disabled-by-default integration](configuration.md#optional-etcqlite-inspection), sign into the workspace, then open **Discovery**. Check **I consent to metadata-only read-only inspection** and choose **Inspect Etcqlite metadata**. The source appears in the existing discovered catalog and read-only inspector; no internal database path is exposed.
+
+The default projection contains `projection_metadata`, `key_metadata` and `lease_metadata`: byte lengths, revisions, versions, leases and operational identity fields. It does not contain raw user keys/values, auth users/password hashes/tokens, protocol commands or peer credentials. Cluster/member IDs and revisions retain their full precision. A compact revision of `-1` means no compaction has occurred.
+
+The inspector shows the **captured revision and fetch time**, separately from source revision at the last discovery check. Checks run every 15 seconds while the Discovery view is open after consent; they do not refresh projection rows. **Stale**, **Disconnected**, **Missing projection** and **Inspection disabled** are not live-data or consensus-health claims. Cached metadata can still be browsed while Etcqlite is stopped; missing projections are not silently recreated, and source failures do not stop the standalone SQLite daemon.
+
+Choose **Refresh metadata** to generate a new metadata-only capture. For raw user KV records, separately check **I consent to loading sensitive raw keys and values** and choose **Load sensitive keys and values**. The optional `key_values` table represents BLOBs as lossless `hex:` strings, including binary keys and values. User values can contain Kubernetes or application secrets; their display and exports remain sensitive. Refreshing metadata clears displayed results and revokes raw access even if the refresh fails. Restarting/shutting down the daemon or removing the catalog entry also removes sensitive cached files.
+
+**Not a backup:** these immutable projections cannot restore Etcqlite. Generic managed writes, CRUD exposure, table replication, snapshot recovery and schema history are unavailable for them. Native `node.db` stores and native recovery images are also rejected by schema-only classification, including renamed or manually cataloged files. Ordinary SQLite discovery and CRUD behavior is unchanged.
+
+Sensitive disk-backed bbolt interchange artifacts are protected too. Their `interchange_meta` marker has `kind='bbolt-interchange'`, `format=2` and a `reference` such as `3.7.3`; `interchange_buckets` and `interchange_entries` hold full binary source records with a SHA-256 footer. These are staging artifacts, not inspector projections or generic database/recovery sources. Classification reads only schema and the safe marker, never bucket/entry rows.
+
+Discovery uses the authenticated Etcqlite format-1 contract. Projection requests pin its exact identity ETag; an identity change is not silently followed. Remove the old catalog entry and explicitly reconnect to accept a different cluster/member. The integration never requests the full sensitive native snapshot endpoint, and never uses table polling for consensus, HA or recovery.
+
 ## Replication and recovery
 
 Replication is **local, table-level polling**, not streaming WAL replication, remote replication, or high availability.

@@ -1,3 +1,15 @@
+import type { EtcqliteInspection } from '../api/client';
+
+export function formatInspectionState(state: EtcqliteInspection['state']): string {
+  return {
+    ready: 'Projection checked',
+    stale: 'Stale projection',
+    disconnected: 'Disconnected',
+    missing: 'Missing projection',
+    disabled: 'Inspection disabled',
+  }[state];
+}
+
 export function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 ** 2) return `${(bytes / 1024).toFixed(1)} KB`;

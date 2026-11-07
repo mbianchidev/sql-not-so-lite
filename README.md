@@ -64,6 +64,7 @@ Follow the [configuration reference](docs/configuration.md) for storage paths, s
 - Expose managed or discovered SQLite files as [scoped JSON CRUD APIs](docs/crud.md), with table allowlists, individual tokens, and explicit write opt-in.
 - Browse and insert rows, edit supported schemas, run SQL with Monaco, and export query results as CSV or JSON.
 - Search discovered databases, inspect them read-only, preserve favorites, and show repository associations.
+- Optionally inspect [Etcqlite metadata projections](docs/usage.md#optional-etcqlite-inspection), with authenticated access and separate consent for sensitive user keys and values.
 - Maintain local table-level replicas and restore stored snapshots, with the [current recovery and schema-history limits](docs/usage.md#replication-and-recovery).
 
 ## Documentation

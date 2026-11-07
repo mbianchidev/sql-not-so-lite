@@ -1,5 +1,5 @@
 import { test as base, expect, type Page } from '@playwright/test';
-import type { ColumnDefinition, DBInfo, EditColumnRequest, QueryResult, TableInfo } from '../src/api/client';
+import type { ColumnDefinition, DBInfo, EditColumnRequest, EtcqliteInspection, QueryResult, RawDiscoveredDB, TableInfo } from '../src/api/client';
 
 export const inventory: TableInfo = {
   Name: 'inventory',
@@ -13,6 +13,12 @@ export const inventory: TableInfo = {
 };
 
 export function createMockState() {
+  const etcqlite: { enabled: boolean; state: EtcqliteInspection['state'] } = { enabled: false, state: 'ready' };
+  const discovered: RawDiscoveredDB[] = [
+    { id: 1, name: 'inventory.sqlite', source_path: '/fixtures/workspace/inventory.sqlite', size_bytes: 24576, sqlite_version: '3.50.0', page_size: 4096, journal_mode: 'wal', last_modified: '2026-01-01T00:00:00Z', status: 'discovered', error_message: '', github_repo: 'example/fixture-workspace', github_url: 'https://github.com/example/fixture-workspace', priority: 'workspace', is_replica: false, favorite: false, available: true },
+    { id: 2, name: 'events.sqlite', source_path: '/fixtures/app/events.sqlite', size_bytes: 12288, sqlite_version: '3.50.0', page_size: 4096, journal_mode: 'wal', last_modified: '2026-01-01T00:00:00Z', status: 'replicating', error_message: '', github_repo: '', github_url: '', priority: 'app_data', is_replica: false, favorite: true, available: true },
+    { id: 3, name: 'archive.sqlite', source_path: '/fixtures/archive/archive.sqlite', size_bytes: 8192, sqlite_version: '3.50.0', page_size: 4096, journal_mode: 'delete', last_modified: '2026-01-01T00:00:00Z', status: 'paused', error_message: '', github_repo: '', github_url: '', priority: 'other', is_replica: false, favorite: false, available: false },
+  ];
   return {
     authRequired: false,
     adminToken: 'synthetic-admin-token-for-browser-tests',
@@ -27,11 +33,10 @@ export function createMockState() {
       { Name: 'events', Columns: inventory.Columns, Indexes: [], RowCount: 12 },
     ] satisfies TableInfo[],
     rows: [['1', 'SKU-001', '24'], ['2', 'SKU-002', '8'], ['3', 'SKU-003', 'NULL']],
-    discovered: [
-      { id: 1, name: 'inventory.sqlite', source_path: '/fixtures/workspace/inventory.sqlite', size_bytes: 24576, sqlite_version: '3.50.0', page_size: 4096, journal_mode: 'wal', last_modified: '2026-01-01T00:00:00Z', status: 'discovered', error_message: '', github_repo: 'example/fixture-workspace', github_url: 'https://github.com/example/fixture-workspace', priority: 'workspace', is_replica: false, favorite: false, available: true },
-      { id: 2, name: 'events.sqlite', source_path: '/fixtures/app/events.sqlite', size_bytes: 12288, sqlite_version: '3.50.0', page_size: 4096, journal_mode: 'wal', last_modified: '2026-01-01T00:00:00Z', status: 'replicating', error_message: '', github_repo: '', github_url: '', priority: 'app_data', is_replica: false, favorite: true, available: true },
-      { id: 3, name: 'archive.sqlite', source_path: '/fixtures/archive/archive.sqlite', size_bytes: 8192, sqlite_version: '3.50.0', page_size: 4096, journal_mode: 'delete', last_modified: '2026-01-01T00:00:00Z', status: 'paused', error_message: '', github_repo: '', github_url: '', priority: 'other', is_replica: false, favorite: false, available: false },
-    ],
+    discovered,
+    etcqlite,
+    inspectionRows: [['1', '3', '4', '12', '9007199254740993', '3', '7']],
+    projectionRequests: [] as Array<{ ack_read_only_inspection: boolean; include_data: boolean; ack_sensitive_data: boolean }>,
     statements: [] as string[],
     inserts: [] as Array<{ Columns: string[]; Values: Array<string | null> }>,
     fieldEdits: [] as EditColumnRequest[],
@@ -95,6 +100,40 @@ export async function mockApi(page: Page, state = createMockState()) {
     });
 
     if (failure) return respond({ error: failure }, 503);
+    if (path === '/api/etcqlite') {
+      if (!state.etcqlite.enabled) return respond({ enabled: false, state: 'disabled' });
+      const database = state.discovered.find((entry) => entry.inspection);
+      if (database?.inspection) {
+        database.inspection.state = state.etcqlite.state;
+      }
+      return respond({ enabled: true, endpoint: 'http://127.0.0.1:2379', state: database ? state.etcqlite.state : 'awaiting-consent', database });
+    }
+    if (path === '/api/etcqlite/projections' && method === 'POST') {
+      const body = request.postDataJSON() as MockState['projectionRequests'][number];
+      state.projectionRequests.push(body);
+      if (!body.ack_read_only_inspection || body.include_data !== body.ack_sensitive_data) {
+        return respond({ error: 'Explicit inspection and sensitive-data consent required' }, 400);
+      }
+      const current = state.discovered.find((entry) => entry.inspection);
+      const fetchedAt = `2026-01-01T00:00:${String(state.projectionRequests.length).padStart(2, '0')}Z`;
+      const database: RawDiscoveredDB = {
+        id: current?.id ?? 99, name: 'Etcqlite fixture', source_path: 'http://127.0.0.1:2379',
+        size_bytes: 16384, sqlite_version: '3.50.0', page_size: 4096, journal_mode: 'delete',
+        last_modified: fetchedAt, status: 'discovered', error_message: '',
+        github_repo: '', github_url: '', priority: 'other', is_replica: false,
+        favorite: current?.favorite ?? false, available: true,
+        inspection: {
+          endpoint: 'http://127.0.0.1:2379', cluster_id: '18446744073709551615', member_id: '9223372036854775809',
+          etag: '"ffffffffffffffff:8000000000000001"', revision: '9007199254740993',
+          compact_revision: '10', source_revision: '9007199254740993', schema_version: 2,
+          engine_version: 'fixture', api_version: '3.7.3', build: 'synthetic-build', dirty: false, configuration_id: 1,
+          includes_data: body.include_data, state: 'ready', fetched_at: fetchedAt, checked_at: fetchedAt,
+        },
+      };
+      state.discovered = state.discovered.filter((entry) => entry.id !== database.id);
+      state.discovered.push(database);
+      return respond(database, current ? 200 : 201);
+    }
     if (path === '/api/stats') {
       return respond({ version: 'test', uptime_seconds: 7380, active_databases: 1, memory_alloc: 12582912, memory_sys: 25165824, goroutines: 8 });
     }
@@ -173,6 +212,33 @@ export async function mockApi(page: Page, state = createMockState()) {
       const id = Number(discovered[1]);
       const endpoint = discovered[2];
       const database = state.discovered.find((entry) => entry.id === id);
+      if (database?.inspection) {
+        const metadataTables: TableInfo[] = [
+          { Name: 'key_metadata', Columns: ['ordinal', 'key_bytes', 'value_bytes', 'create_revision', 'mod_revision', 'version', 'lease'].map((Name) => ({ Name, Type: 'INTEGER', Nullable: false, DefaultValue: '', PrimaryKey: Name === 'ordinal' })), Indexes: [], RowCount: state.inspectionRows.length },
+          { Name: 'lease_metadata', Columns: ['id', 'granted_ttl', 'generation', 'checkpoint_ttl'].map((Name) => ({ Name, Type: 'INTEGER', Nullable: Name === 'checkpoint_ttl', DefaultValue: '', PrimaryKey: Name === 'id' })), Indexes: [], RowCount: 1 },
+          { Name: 'projection_metadata', Columns: ['kind', 'format', 'cluster_id', 'member_id', 'revision', 'compact_revision', 'source_schema', 'includes_data'].map((Name) => ({ Name, Type: Name === 'kind' ? 'TEXT' : Name.endsWith('_id') ? 'BLOB' : 'INTEGER', Nullable: false, DefaultValue: '', PrimaryKey: false })), Indexes: [], RowCount: 1 },
+        ];
+        if (database.inspection.includes_data) metadataTables.push({
+          Name: 'key_values', Columns: ['ordinal', 'key', 'value'].map((Name) => ({ Name, Type: Name === 'ordinal' ? 'INTEGER' : 'BLOB', Nullable: false, DefaultValue: '', PrimaryKey: Name === 'ordinal' })), Indexes: [], RowCount: 1,
+        });
+        if (endpoint === '/schema') return respond(metadataTables);
+        if (endpoint === '/table') {
+          const tableName = new URL(request.url()).searchParams.get('name');
+          const table = metadataTables.find((entry) => entry.Name === tableName);
+          if (!table) return respond({ error: 'table not found' }, 404);
+          return respond({
+            Columns: table.Columns.map(({ Name, Type }) => ({ Name, Type })),
+            Rows: tableName === 'key_values' ? [['1', 'hex:00ff01', 'hex:0002feff']]
+              : tableName === 'key_metadata' ? state.inspectionRows
+                : tableName === 'lease_metadata' ? [['7', '60', '1', 'NULL']]
+                  : [['read-only-inspection', '1', 'hex:ffffffffffffffff', 'hex:8000000000000001', '9007199254740993', '10', '2', database.inspection.includes_data ? '1' : '0']],
+            TotalCount: 1,
+          });
+        }
+        if (['/replicate', '/restore', '/snapshots', '/versions', '/transitions'].includes(endpoint)) {
+          return respond({ error: 'Etcqlite projections cannot use generic replication or recovery' }, 403);
+        }
+      }
       if (!endpoint && method === 'PATCH') {
         if (database) database.favorite = (request.postDataJSON() as { favorite: boolean }).favorite;
         return respond({ success: true });

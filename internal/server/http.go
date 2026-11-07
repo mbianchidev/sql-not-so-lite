@@ -22,6 +22,7 @@ import (
 
 	"github.com/mbianchidev/sql-not-so-lite/internal/catalog"
 	"github.com/mbianchidev/sql-not-so-lite/internal/config"
+	"github.com/mbianchidev/sql-not-so-lite/internal/etcqlite"
 	"github.com/mbianchidev/sql-not-so-lite/internal/replicator"
 	"github.com/mbianchidev/sql-not-so-lite/internal/scanner"
 	"github.com/mbianchidev/sql-not-so-lite/internal/schema"
@@ -32,17 +33,21 @@ import (
 var staticFiles embed.FS
 
 type HTTPServer struct {
-	svc            *service.DatabaseService
-	server         *http.Server
-	port           int
-	startTime      time.Time
-	catalog        *catalog.Catalog
-	cfg            *config.Config
-	scanMu         sync.Mutex
-	scanStatusMu   sync.RWMutex
-	scanInProgress bool
-	scanCtx        context.Context
-	scanCancel     context.CancelFunc
+	svc               *service.DatabaseService
+	server            *http.Server
+	port              int
+	startTime         time.Time
+	catalog           *catalog.Catalog
+	cfg               *config.Config
+	scanMu            sync.Mutex
+	scanStatusMu      sync.RWMutex
+	scanInProgress    bool
+	scanCtx           context.Context
+	scanCancel        context.CancelFunc
+	inspectionMu      sync.Mutex
+	inspectionReady   bool
+	inspectionInitErr error
+	sensitiveConsent  sync.Map
 }
 
 var (
@@ -100,6 +105,15 @@ func (s *HTTPServer) Start() error {
 }
 
 func (s *HTTPServer) Handler() (http.Handler, error) {
+	if s.cfg != nil {
+		if err := s.cfg.ValidateEtcqlite(); err != nil {
+			return nil, err
+		}
+	}
+	if err := s.initializeInspections(); err != nil {
+		s.inspectionInitErr = err
+		log.Printf("Etcqlite inspection cache unavailable: %v", err)
+	}
 	mux := http.NewServeMux()
 	admin := func(handler http.HandlerFunc) http.HandlerFunc { return s.corsMiddleware(s.adminMiddleware(handler)) }
 
@@ -111,6 +125,8 @@ func (s *HTTPServer) Handler() (http.Handler, error) {
 	mux.HandleFunc("/api/scan", admin(s.handleScan))
 	mux.HandleFunc("/api/discovered", admin(s.handleDiscovered))
 	mux.HandleFunc("/api/discovered/", admin(s.handleDiscoveredItem))
+	mux.HandleFunc("/api/etcqlite", admin(s.handleEtcqlite))
+	mux.HandleFunc("/api/etcqlite/projections", admin(s.handleEtcqliteProjection))
 	mux.HandleFunc("/api/auth", s.corsMiddleware(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -144,10 +160,11 @@ func (s *HTTPServer) Stop(ctx context.Context) error {
 		s.scanMu.Lock()
 		s.scanMu.Unlock()
 	}
+	var shutdownErr error
 	if s.server != nil {
-		return s.server.Shutdown(ctx)
+		shutdownErr = s.server.Shutdown(ctx)
 	}
-	return nil
+	return errors.Join(shutdownErr, s.closeSensitiveInspections())
 }
 
 func spaHandler(fileServer http.Handler, staticFS fs.FS) http.Handler {
@@ -801,7 +818,7 @@ func (s *HTTPServer) handleDiscovered(w http.ResponseWriter, r *http.Request) {
 
 	var result []map[string]interface{}
 	for _, d := range dbs {
-		result = append(result, discoveredToJSON(&d, s.cfg.Replicator.ReplicaDir))
+		result = append(result, s.discoveredJSON(&d))
 	}
 	if result == nil {
 		result = []map[string]interface{}{}
@@ -835,6 +852,12 @@ func (s *HTTPServer) handleDiscoveredItem(w http.ResponseWriter, r *http.Request
 		return
 	}
 	switch resourceParts[0] {
+	case "replicate", "restore", "snapshots", "versions", "transitions":
+		if s.rejectProtectedOperation(w, r, id) {
+			return
+		}
+	}
+	switch resourceParts[0] {
 	case "replicate":
 		s.handleReplicate(w, r, id)
 	case "restore":
@@ -856,10 +879,14 @@ func (s *HTTPServer) handleDiscoveredItem(w http.ResponseWriter, r *http.Request
 	}
 }
 
-func (s *HTTPServer) openDiscoveredReadOnly(id int64) (*catalog.DiscoveredDB, *sql.DB, error) {
+func (s *HTTPServer) openDiscoveredReadOnly(ctx context.Context, id int64) (*catalog.DiscoveredDB, *sql.DB, error) {
 	discovered, err := s.catalog.GetDiscovered(id)
 	if err != nil {
 		return nil, nil, err
+	}
+	if discovered.Inspection != nil {
+		db, err := s.openEtcqliteProjection(ctx, discovered)
+		return discovered, db, err
 	}
 	info, err := os.Stat(discovered.SourcePath)
 	if err != nil {
@@ -884,6 +911,10 @@ func writeDiscoveredOpenError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusNotFound, "database not found")
 		return
 	}
+	if errors.Is(err, etcqlite.ErrProtected) {
+		writeError(w, http.StatusForbidden, err.Error())
+		return
+	}
 	writeError(w, http.StatusConflict, err.Error())
 }
 
@@ -892,15 +923,15 @@ func (s *HTTPServer) handleDiscoveredSchema(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	_, db, err := s.openDiscoveredReadOnly(id)
+	ctx, cancel := context.WithTimeout(r.Context(), discoveredQueryTimeout)
+	defer cancel()
+	_, db, err := s.openDiscoveredReadOnly(ctx, id)
 	if err != nil {
 		writeDiscoveredOpenError(w, err)
 		return
 	}
 	defer db.Close()
 
-	ctx, cancel := context.WithTimeout(r.Context(), discoveredQueryTimeout)
-	defer cancel()
 	tables, err := service.GetDatabaseSchema(ctx, db)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -922,15 +953,15 @@ func (s *HTTPServer) handleDiscoveredTable(w http.ResponseWriter, r *http.Reques
 	limit := boundedQueryInt(r.URL.Query().Get("limit"), 100, 1, 500)
 	offset := boundedQueryInt(r.URL.Query().Get("offset"), 0, 0, 1_000_000_000)
 
-	_, db, err := s.openDiscoveredReadOnly(id)
+	ctx, cancel := context.WithTimeout(r.Context(), discoveredQueryTimeout)
+	defer cancel()
+	discovered, db, err := s.openDiscoveredReadOnly(ctx, id)
 	if err != nil {
 		writeDiscoveredOpenError(w, err)
 		return
 	}
 	defer db.Close()
 
-	ctx, cancel := context.WithTimeout(r.Context(), discoveredQueryTimeout)
-	defer cancel()
 	var exists int
 	if err := db.QueryRowContext(
 		ctx,
@@ -951,7 +982,11 @@ func (s *HTTPServer) handleDiscoveredTable(w http.ResponseWriter, r *http.Reques
 		limit,
 		offset,
 	)
-	result, err := service.QueryDatabase(ctx, db, statement, nil, limit, 0)
+	query := service.QueryDatabase
+	if discovered.Inspection != nil {
+		query = service.QueryProjection
+	}
+	result, err := query(ctx, db, statement, nil, limit, 0)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -984,16 +1019,20 @@ func (s *HTTPServer) handleDiscoveredQuery(w http.ResponseWriter, r *http.Reques
 	req.Limit = boundedInt(req.Limit, 1000, 1, 1000)
 	req.Offset = boundedInt(req.Offset, 0, 0, 1_000_000_000)
 
-	_, db, err := s.openDiscoveredReadOnly(id)
+	ctx, cancel := context.WithTimeout(r.Context(), discoveredQueryTimeout)
+	defer cancel()
+	discovered, db, err := s.openDiscoveredReadOnly(ctx, id)
 	if err != nil {
 		writeDiscoveredOpenError(w, err)
 		return
 	}
 	defer db.Close()
 
-	ctx, cancel := context.WithTimeout(r.Context(), discoveredQueryTimeout)
-	defer cancel()
-	result, err := service.QueryDatabase(ctx, db, req.SQL, req.Params, req.Limit, req.Offset)
+	query := service.QueryDatabase
+	if discovered.Inspection != nil {
+		query = service.QueryProjection
+	}
+	result, err := query(ctx, db, req.SQL, req.Params, req.Limit, req.Offset)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -1146,7 +1185,7 @@ func (s *HTTPServer) handleDiscoveredGet(w http.ResponseWriter, r *http.Request,
 			return
 		}
 
-		result := discoveredToJSON(d, s.cfg.Replicator.ReplicaDir)
+		result := s.discoveredJSON(d)
 
 		// Include replication state if available
 		rs, err := s.catalog.GetReplicationState(id)
@@ -1164,6 +1203,25 @@ func (s *HTTPServer) handleDiscoveredGet(w http.ResponseWriter, r *http.Request,
 		writeJSON(w, http.StatusOK, result)
 
 	case http.MethodDelete:
+		d, err := s.catalog.GetDiscovered(id)
+		if err != nil {
+			writeDiscoveredOpenError(w, err)
+			return
+		}
+		if d.Inspection != nil {
+			s.inspectionMu.Lock()
+			defer s.inspectionMu.Unlock()
+			d, err = s.catalog.GetDiscovered(id)
+			if err != nil {
+				writeDiscoveredOpenError(w, err)
+				return
+			}
+			s.sensitiveConsent.Delete(id)
+			if err := s.removeProjection(d.SourcePath); err != nil {
+				writeInspectionError(w, err)
+				return
+			}
+		}
 		if err := s.catalog.DeleteDiscovered(id); err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return

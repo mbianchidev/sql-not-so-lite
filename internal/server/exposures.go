@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/mbianchidev/sql-not-so-lite/internal/catalog"
+	"github.com/mbianchidev/sql-not-so-lite/internal/etcqlite"
 	"github.com/mbianchidev/sql-not-so-lite/internal/service"
 	"modernc.org/sqlite"
 )
@@ -62,6 +63,9 @@ func (s *HTTPServer) openExposureDatabase(ctx context.Context, exposure *catalog
 	if err != nil {
 		return nil, err
 	}
+	if discovered.Inspection != nil {
+		return nil, etcqlite.ErrProtected
+	}
 	info, err := os.Stat(discovered.SourcePath)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, fmt.Errorf("%w: database file is unavailable", service.ErrRecordNotFound)
@@ -76,6 +80,9 @@ func (s *HTTPServer) openExposureDatabase(ctx context.Context, exposure *catalog
 		return nil, fmt.Errorf("inspect internal catalog: %w", err)
 	} else if os.SameFile(own, info) {
 		return nil, fmt.Errorf("%w: the internal catalog cannot be exposed", service.ErrRecordInput)
+	}
+	if err := etcqlite.CheckOrdinaryFile(ctx, discovered.SourcePath); err != nil {
+		return nil, err
 	}
 	path, err := filepath.Abs(discovered.SourcePath)
 	if err != nil {
@@ -381,7 +388,7 @@ func writeCRUDerror(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, service.ErrRecordInput):
 		status = 400
-	case errors.Is(err, service.ErrRecordReadOnly):
+	case errors.Is(err, service.ErrRecordReadOnly), errors.Is(err, etcqlite.ErrProtected):
 		status = 403
 	case errors.Is(err, service.ErrRecordNotFound), errors.Is(err, sql.ErrNoRows):
 		status = 404

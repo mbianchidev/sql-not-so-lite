@@ -30,7 +30,14 @@ export function ResultsTable({ result, rowOffset = 0 }: Props) {
     const valueB = b[sortColumn] || '';
     const numericA = Number(valueA);
     const numericB = Number(valueB);
-    const comparison = !isNaN(numericA) && !isNaN(numericB) ? numericA - numericB : valueA.localeCompare(valueB);
+    let comparison: number;
+    if (/^-?\d+$/.test(valueA) && /^-?\d+$/.test(valueB)) {
+      const integerA = BigInt(valueA);
+      const integerB = BigInt(valueB);
+      comparison = integerA < integerB ? -1 : integerA > integerB ? 1 : 0;
+    } else {
+      comparison = !isNaN(numericA) && !isNaN(numericB) ? numericA - numericB : valueA.localeCompare(valueB);
+    }
     return sort.direction === 'asc' ? comparison : -comparison;
   });
   const exportCSV = () => {
