@@ -128,6 +128,11 @@ bundles to return successful responses, JavaScript content types, and nonempty
 content. A small import-only entry module is valid; there is no minimum bundle
 size.
 
+Package-test containers run without network access. CI installs unsigned snapshot
+RPMs with a per-command `--nosignature` exception.
+RPM digest validation, release-artifact checksums, and installed-binary equality
+checks remain enabled; the container's system-wide RPM policy is not changed.
+
 The frontend is built once per workflow revision and passed as a SHA-named
 artifact to snapshot packaging and release publication. Consumers download it
 outside the checkout, then the shared GUI build hook stages it after GoReleaser's

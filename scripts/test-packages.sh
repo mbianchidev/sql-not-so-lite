@@ -21,7 +21,7 @@ for format in deb rpm; do
   else
     image=fedora:latest
   fi
-  node "$(dirname "$0")/container.mjs" --platform "linux/$arch" \
+  node "$(dirname "$0")/container.mjs" --platform "linux/$arch" --network none \
     --mount "type=bind,source=$dist,target=/packages,readonly" \
     --mount "type=bind,source=$expected,target=/expected,readonly" \
     --env "VERSION=$version" --env "ARCH=$arch" --env "FORMAT=$format" \
@@ -32,7 +32,7 @@ for format in deb rpm; do
       if [ "$FORMAT" = deb ]; then
         dpkg --install "$package"
       else
-        rpm --install "$package"
+        rpm --install --nosignature "$package"
       fi
       test "$(sqnsl version)" = "sql-not-so-lite $VERSION"
       test -f /usr/lib/systemd/user/sqnsl.service
