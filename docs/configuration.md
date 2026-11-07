@@ -48,13 +48,29 @@ sync_interval = "5s"
 | `server.grpc_port` | `50051` | gRPC listener port |
 | `server.http_port` | `9147` | GUI and REST listener port |
 | `server.data_dir` | `~/.sql-not-so-lite/databases` | Managed `.sqlite` files and internal `catalog.sqlite` |
+| `server.bind_address` | `"127.0.0.1"` | Shared HTTP/gRPC bind address; external IPs require an admin token |
+| `server.auth_token_file` | `""` | File containing an admin bearer token, at least 32 characters |
 | `idle.connection_timeout` | `"5m"` | Close database connections after this idle duration |
 | `idle.check_interval` | `"30s"` | Interval between idle checks |
 | `limits.max_databases` | `100` | Store-manager limit used when creating managed databases; not a filesystem quota |
 | `replicator.replica_dir` | `~/.sql-not-so-lite/replicas` | Current local copies of discovered databases |
 | `replicator.snapshot_dir` | `~/.sql-not-so-lite/snapshots` | Stored replication baselines |
 
-HTTP and gRPC bind on all interfaces. There is no bind-address setting, authentication, or TLS setting in this config. Restrict network access externally.
+## Authentication and network access
+
+HTTP and gRPC now default to **loopback**, not all interfaces. Local operation without an admin token remains supported on a trusted machine. A non-loopback `bind_address` is rejected unless an admin token is configured.
+
+Use `SQNSL_AUTH_TOKEN` for an ephemeral token, or `server.auth_token_file` for a persistent token file. Environment tokens take precedence over the file. Tokens must contain at least 32 characters; use cryptographically random values and protect token files with restrictive permissions. The token value is not saved by `sqnsl config init`/`Save` or printed by `sqnsl config`.
+
+```toml
+[server]
+bind_address = "0.0.0.0"
+auth_token_file = "/absolute/path/to/admin.token"
+```
+
+When enabled, admin authentication protects all management/SQL REST endpoints and all gRPC calls, including reflection. The GUI asks for the token and keeps it only in memory. `GET /api/auth` and static GUI assets remain public; the endpoint returns only whether authentication is required.
+
+**Bearer authentication does not provide TLS.** Use HTTPS and gRPC TLS through a trusted terminating proxy and a firewall; do not send tokens over an untrusted plaintext connection. CRUD APIs have independent scoped tokens and table/write opt-ins, described in the [CRUD guide](crud.md).
 
 ## Scanner
 
@@ -90,6 +106,8 @@ Use positive Go durations such as `"15m"` or `"2h"` for scan intervals. Invalid 
 |----------|--------|
 | `SQNSL_DATA_DIR` | Replace only the managed database/catalog directory. Does not relocate replicas, snapshots, config, or PID files. |
 | `SQNSL_SCAN_ROOT` | Replace the recursive scan root and reset the scanner's path-priority defaults under that root. |
+| `SQNSL_BIND_ADDRESS` | Override the shared HTTP/gRPC bind IP address. |
+| `SQNSL_AUTH_TOKEN` | Supply the admin bearer token without storing it in TOML. Empty or weak values are rejected. |
 
 Use absolute paths for these overrides. Container images set `HOME=/data` and keep configuration and storage under the persistent `/data` volume; see [containers](releases.md#containers).
 

@@ -10,6 +10,7 @@ import { SchemaTimeline } from './SchemaTimeline';
 import { CodeEditor } from './CodeEditor';
 import { TabBar } from './TabBar';
 import { Icon } from './Icon';
+import { APIExposurePanel } from './APIExposurePanel';
 
 interface Props {
   database: DiscoveredDB;
@@ -22,6 +23,7 @@ const PAGE_SIZE = 100;
 
 export function DiscoveredInspector({ database, darkMode }: Props) {
   const [activeTab, setActiveTab] = useState<InspectorTab>('browse');
+  const [showAPI, setShowAPI] = useState(false);
   const [tables, setTables] = useState<TableInfo[]>([]);
   const [selectedTable, setSelectedTable] = useState<string | null>(null);
   const [tableData, setTableData] = useState<QueryResult | null>(null);
@@ -120,8 +122,8 @@ export function DiscoveredInspector({ database, darkMode }: Props) {
   return (
     <section className="discovered-inspector" aria-label={`Inspect ${database.Name}`}>
       <div className="inspector-header">
-        <div><h3>{database.Name}</h3><p>No writes to the source file</p></div>
-        <span className="read-only-badge"><Icon name="lock" /> Read-only inspector</span>
+        <div><h3>{database.Name}</h3><p>No writes through this inspector</p></div>
+        <div className="workspace-heading-actions"><span className="read-only-badge"><Icon name="lock" /> Read-only inspector</span><button className="btn-sm" disabled={!database.Available || loadingSchema} onClick={() => setShowAPI((current) => !current)} aria-expanded={showAPI}><Icon name="terminal" /> Expose API</button></div>
       </div>
 
       <TabBar<InspectorTab> id={`inspector-${database.ID}`} label="Database inspector" active={activeTab} onChange={setActiveTab} tabs={[
@@ -131,6 +133,7 @@ export function DiscoveredInspector({ database, darkMode }: Props) {
       ]} />
 
       <div className="inspector-content" role="tabpanel" id={`inspector-${database.ID}-panel`} aria-labelledby={`inspector-${database.ID}-tab-${activeTab}`} tabIndex={0}>
+      {showAPI && <APIExposurePanel source={{ discovered_id: database.ID }} tables={tables} onClose={() => setShowAPI(false)} />}
       {!database.Available && activeTab !== 'history' && (
         <div className="inspector-unavailable">
           The source file is unavailable. Restore it to inspect its current contents.

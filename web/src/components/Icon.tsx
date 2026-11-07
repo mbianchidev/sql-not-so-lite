@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react';
 
 const paths = {
+  copy: <><rect x="8" y="8" width="13" height="13" rx="2" /><path d="M16 8V3H3v13h5" /></>,
   database: <><ellipse cx="12" cy="5" rx="8" ry="3" /><path d="M4 5v14c0 4 16 4 16 0V5M4 12c0 4 16 4 16 0" /></>,
   table: <><rect x="3" y="3" width="18" height="18" rx="2" /><path d="M3 9h18M9 9v12M3 15h18" /></>,
   search: <><circle cx="10.5" cy="10.5" r="6.5" /><path d="m16 16 5 5" /></>,

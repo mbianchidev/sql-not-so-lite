@@ -14,6 +14,9 @@ export const inventory: TableInfo = {
 
 export function createMockState() {
   return {
+    authRequired: false,
+    adminToken: 'synthetic-admin-token-for-browser-tests',
+    exposures: [] as Array<{ alias: string; database_id: number; managed_database?: string; tables: string[]; writable: boolean }>,
     databases: [
       { Name: 'workbench_demo', Path: '/fixtures/workbench_demo.sqlite', SizeBytes: 24576, Active: true, TableCount: 2 },
       { Name: 'analytics_demo', Path: '/fixtures/analytics_demo.sqlite', SizeBytes: 12288, Active: false, TableCount: 1 },
@@ -47,6 +50,28 @@ export async function mockApi(page: Page, state = createMockState()) {
     const method = request.method();
     const failure = state.failures.get(path);
     const respond = (json: unknown, status = 200) => route.fulfill({ status, json });
+    if (path === '/api/auth') return respond({ required: state.authRequired });
+    if (state.authRequired && request.headers().authorization !== `Bearer ${state.adminToken}`) {
+      return respond({ error: 'admin bearer token required' }, 401);
+    }
+    if (path === '/api/health') return respond({ status: 'ok', version: 'test' });
+    if (path === '/api/exposures') {
+      if (method === 'POST') {
+        const body = request.postDataJSON() as { alias: string; managed_database?: string; discovered_id?: number; tables: string[]; writable: boolean };
+        const exposure = { alias: body.alias, database_id: body.discovered_id ?? 10, managed_database: body.managed_database, tables: body.tables, writable: body.writable };
+        state.exposures.push(exposure);
+        return respond({ exposure, token: 'synthetic-scoped-token-for-browser-tests' }, 201);
+      }
+      return respond(state.exposures);
+    }
+    const exposure = path.match(/^\/api\/exposures\/([^/]+)(\/token)?$/);
+    if (exposure) {
+      if (exposure[2]) return respond({ token: 'synthetic-rotated-token-for-browser-tests' });
+      if (method === 'DELETE') {
+        state.exposures = state.exposures.filter((entry) => entry.alias !== exposure[1]);
+        return route.fulfill({ status: 204 });
+      }
+    }
     const rows = (): QueryResult => ({
       Columns: inventory.Columns.map(({ Name, Type }) => ({ Name, Type })),
       Rows: state.rows,

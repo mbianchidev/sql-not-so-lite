@@ -28,6 +28,8 @@ The **Discovery** menu supports directory scans and search by name, path, reposi
 
 The SQL editor and its worker are bundled with the application; editor startup does not require a third-party CDN.
 
+Use **Expose API** in a managed database header or a discovered file's inspector to create a table-scoped JSON CRUD API. APIs default to read-only; **Allow writes** explicitly enables mutation, including mutation of discovered original files. Copy the one-time token and example request, or rotate/revoke access later. The inspector itself stays read-only. See the [CRUD guide](crud.md).
+
 ## CLI reference
 
 ```text

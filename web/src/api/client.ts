@@ -68,6 +68,37 @@ export interface StatsInfo {
   goroutines: number;
 }
 
+export type APISource =
+  | { managed_database: string; discovered_id?: never }
+  | { discovered_id: number; managed_database?: never };
+
+export interface APIExposure {
+  alias: string;
+  database_id: number;
+  managed_database?: string;
+  tables: string[];
+  writable: boolean;
+}
+
+let adminToken: string | null = null;
+const authenticationListeners = new Set<() => void>();
+
+export function setAdminToken(token: string | null) { adminToken = token; }
+export function hasAdminToken() { return adminToken !== null; }
+export function onAuthenticationRequired(listener: () => void) {
+  authenticationListeners.add(listener);
+  return () => { authenticationListeners.delete(listener); };
+}
+export function signOut() {
+  adminToken = null;
+  authenticationListeners.forEach((listener) => listener());
+}
+
+export class APIError extends Error {
+  readonly status: number;
+  constructor(message: string, status: number) { super(message); this.status = status; }
+}
+
 export interface DiscoveredDB {
   ID: number;
   Name: string;
@@ -225,19 +256,32 @@ function toSchemaTransitionInfo(transition: RawSchemaTransitionInfo): SchemaTran
 }
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
+  const requestToken = adminToken;
+  const headers = new Headers(options?.headers);
+  headers.set('Content-Type', 'application/json');
+  if (requestToken) headers.set('Authorization', `Bearer ${requestToken}`);
   const res = await fetch(path, {
     ...options,
-    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    headers,
   });
 
-  const data = await res.json();
+  const data = res.status === 204 ? undefined : await res.json();
   if (!res.ok) {
-    throw new Error(data.error || `Request failed: ${res.status}`);
+    if (res.status === 401 && adminToken === requestToken) signOut();
+    throw new APIError(data?.error || `Request failed: ${res.status}`, res.status);
   }
   return data as T;
 }
 
 export const api = {
+  getAuthentication: () => request<{ required: boolean }>('/api/auth'),
+  listExposures: () => request<APIExposure[]>('/api/exposures'),
+  createExposure: (source: APISource, alias: string, tables: string[], writable: boolean) =>
+    request<{ exposure: APIExposure; token: string }>('/api/exposures', {
+      method: 'POST', body: JSON.stringify({ ...source, alias, tables, writable }),
+    }),
+  revokeExposure: (alias: string) => request<void>(`/api/exposures/${encodeURIComponent(alias)}`, { method: 'DELETE' }),
+  rotateExposure: (alias: string) => request<{ token: string }>(`/api/exposures/${encodeURIComponent(alias)}/token`, { method: 'POST' }),
   listDatabases: () => request<DBInfo[]>('/api/databases'),
 
   createDatabase: (name: string) =>

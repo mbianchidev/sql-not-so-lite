@@ -241,7 +241,7 @@ export function DiscoveredPanel({ selectedId, onSelect, darkMode }: Props) {
           {isFiltering && <button className="btn-icon" onClick={() => setSearchQuery('')} aria-label="Clear search"><Icon name="close" /></button>}
         </div>
       </div>
-      <div className="catalog-summary"><span role="status">{filteredDatabases.length} database{filteredDatabases.length === 1 ? '' : 's'}{isFiltering || favoritesOnly ? ` of ${databases.length}` : ''}</span><span><Icon name="lock" /> Source files are read-only</span></div>
+      <div className="catalog-summary"><span role="status">{filteredDatabases.length} database{filteredDatabases.length === 1 ? '' : 's'}{isFiltering || favoritesOnly ? ` of ${databases.length}` : ''}</span><span><Icon name="lock" /> Read-only inspection</span></div>
       {loading && databases.length === 0 && <div className="loading" role="status">Loading discovered databases...</div>}
 
       <div className={`discovery-workspace ${selected ? 'has-selection' : ''}`}>

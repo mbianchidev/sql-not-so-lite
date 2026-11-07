@@ -58,6 +58,8 @@ Use focused Go package tests while iterating, and run the relevant build before 
 
 Browser tests serve the production build on port 4178, intercept every API request with synthetic fixtures, and block Monaco's former CDN. Build first; the tests do not use the running daemon or application databases. Linux may need `npx playwright install --with-deps chromium` to install browser system libraries. CI runs these workflows in the web job and retains failure traces for three days.
 
+CRUD/authentication tests exercise real disposable SQLite fixtures through the HTTP router and gRPC's in-memory transport. They check native JSON, parameterized filters, single-row rollback, scoped-token rotation/revocation, source write opt-ins, and management/reflection authentication. GUI sign-in and exposure flows use synthetic tokens; tokens are never written into browser storage.
+
 ## Protobuf changes
 
 Install `protoc`, `protoc-gen-go`, and `protoc-gen-go-grpc` on `PATH` before regenerating:

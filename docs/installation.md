@@ -58,7 +58,7 @@ curl -fsS http://localhost:9147/api/health
 
 Stop it with **Ctrl+C**.
 
-**Run as a normal user on a trusted network.** HTTP and gRPC listen on all interfaces without authentication or TLS. Restrict access with a firewall or an authenticated proxy. Without `SQNSL_SCAN_ROOT`, startup scans the full home directory and repeats every 30 minutes. This environment override applies to that process only; set `scanner.scan_root` in the [config file](configuration.md) for a persistent setting.
+**Run as a normal user.** HTTP and gRPC default to loopback. External listeners require an admin bearer token; protect remote traffic with a TLS-terminating proxy and firewall. Without `SQNSL_SCAN_ROOT`, startup scans the full home directory and repeats every 30 minutes. This environment override applies to that process only; set `scanner.scan_root` in the [config file](configuration.md) for a persistent setting.
 
 ## Install the built binary
 
@@ -114,11 +114,13 @@ Use only one service manager: Homebrew services, the packaged Linux unit, or `sq
 
 ```bash
 make docker-build  # No-cache build; default image tag is dev
+export SQNSL_AUTH_TOKEN="$(openssl rand -hex 32)"
 docker run --rm -p 127.0.0.1:9147:9147 -p 127.0.0.1:50051:50051 \
+  -e SQNSL_AUTH_TOKEN \
   -v sqnsl-data:/data sql-not-so-lite:dev
 ```
 
-Alternatively, `make docker-up` performs a no-cache Compose build and starts it in the background; `make docker-down` stops it. **The checked-in Compose file publishes both ports on all host interfaces**, unlike the localhost-only example above.
+Alternatively, export a strong `SQNSL_AUTH_TOKEN`, then use `make docker-up` for a no-cache Compose build and background startup; `make docker-down` stops it. The checked-in Compose file publishes ports only on host loopback and supplies the token to its authenticated health check. Sign in to the GUI with the admin token.
 
 Containers see only mounted paths. Use the native binary for desktop-wide discovery, or mount a source directory and set `SQNSL_SCAN_ROOT` to its path inside the container. Read-only mounts support discovery and inspection, but not in-place restoration of source files.
 

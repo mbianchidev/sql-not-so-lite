@@ -10,8 +10,9 @@
 | [Usage](usage.md) | GUI workflows, CLI commands, discovery, local replication, and safe snapshot recovery |
 | [Configuration](configuration.md) | TOML settings, defaults, storage paths, environment overrides, and inactive settings |
 | [APIs](api.md) | gRPC and REST examples, endpoint reference, and query-result limitations |
+| [CRUD APIs](crud.md) | Expose any registered SQLite file with typed JSON, scoped tokens, filters, and explicit write access |
 
-The daemon distinguishes writable **managed databases** from read-only inspection of **discovered source files**. Start with a small scan root and use it only on a trusted network; the servers have no built-in authentication or TLS.
+The daemon distinguishes writable **managed databases** from read-only inspection of **discovered source files**. CRUD APIs can write to discovered originals only after explicit opt-in. Listeners default to loopback; external access requires admin authentication and a TLS-terminating proxy. Start with a small scan root.
 
 ## Developing and releasing
 

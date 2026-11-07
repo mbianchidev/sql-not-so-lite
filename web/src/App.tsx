@@ -7,6 +7,8 @@ import { StatsPanel } from './components/StatsPanel';
 import { DiscoveredPanel } from './components/DiscoveredPanel';
 import { Icon } from './components/Icon';
 import { TabBar } from './components/TabBar';
+import { APIExposurePanel } from './components/APIExposurePanel';
+import { hasAdminToken, signOut } from './api/client';
 import { useDatabases, useSchema, useStats } from './hooks/useDatabase';
 import { useTheme } from './hooks/useTheme';
 import { formatBytes } from './utils/format';
@@ -19,6 +21,7 @@ function App() {
   const [selectedTable, setSelectedTable] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<DatabaseTab>('browse');
   const [startCreatingTable, setStartCreatingTable] = useState(false);
+  const [showAPI, setShowAPI] = useState(false);
   const [view, setView] = useState<View>('discovered');
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [selectedDiscoveredId, setSelectedDiscoveredId] = useState<number | null>(null);
@@ -35,6 +38,7 @@ function App() {
     setSelectedTable(null);
     setActiveTab('browse');
     setStartCreatingTable(false);
+    setShowAPI(false);
     setView('database');
     closeSidebar();
   };
@@ -69,6 +73,7 @@ function App() {
           <strong>{view === 'discovered' ? 'Discovery' : selectedDb}</strong>
         </div>
         <div className="header-actions">
+          {hasAdminToken() && <button className="btn-sm" onClick={signOut}>Sign out</button>}
           <a className="btn-icon" href="https://github.com/mbianchidev/sql-not-so-lite/tree/main/docs" target="_blank" rel="noopener noreferrer" aria-label="Documentation" title="Documentation">
             <Icon name="help" />
           </a>
@@ -111,7 +116,7 @@ function App() {
                   <h2>{selectedDb}</h2>
                   <p>{tables.length} tables <span aria-hidden="true">/</span> {formatBytes(database?.SizeBytes ?? 0)} <span aria-hidden="true">/</span> Managed database</p>
                 </div>
-                <span className="access-badge"><Icon name="database" /> Read &amp; write</span>
+                <div className="workspace-heading-actions"><span className="access-badge"><Icon name="database" /> Read &amp; write</span><button className="btn-sm" onClick={() => setShowAPI((current) => !current)} aria-expanded={showAPI}><Icon name="terminal" /> Expose API</button></div>
               </div>
               <TabBar<DatabaseTab>
                 id="database"
@@ -137,6 +142,7 @@ function App() {
               <DiscoveredPanel selectedId={selectedDiscoveredId} onSelect={setSelectedDiscoveredId} darkMode={darkMode} />
             ) : selectedDb ? (
               <>
+                {showAPI && <APIExposurePanel source={{ managed_database: selectedDb }} tables={tables} onClose={() => setShowAPI(false)} />}
                 {schemaError && <div className="error-msg" role="alert">{schemaError}<button className="btn-sm" onClick={refreshSchema}>Retry schema</button></div>}
                 {schemaLoading && tables.length === 0 && activeTab !== 'query' ? <div className="loading" role="status">Reading database schema...</div> : (
                   <>

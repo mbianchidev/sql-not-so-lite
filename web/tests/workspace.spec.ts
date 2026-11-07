@@ -66,6 +66,7 @@ test('defaults to dark even with a light system preference and saves an explicit
 
 test('skips navigation and visibly focuses the main workspace', async ({ page }) => {
   await page.goto('/');
+  await expect(page.getByRole('link', { name: 'Skip to main content', exact: true })).toBeVisible();
   await page.keyboard.press('Tab');
   await expect(page.getByRole('link', { name: 'Skip to main content', exact: true })).toBeFocused();
   await page.keyboard.press('Enter');
