@@ -1,10 +1,10 @@
 # sql-not-so-lite
 
+A SQLite workspace with searchable navigation, schema editing, and local SQL tools.
+
 [Documentation](docs/README.md) | [Issues](https://github.com/mbianchidev/sql-not-so-lite/issues) | [Releases](https://github.com/mbianchidev/sql-not-so-lite/releases)
 
 ![Schema viewer and column editor in the sql-not-so-lite web interface](docs/images/schema-view.png)
-
-*A SQLite workspace with searchable navigation, schema editing, and local SQL tools. Screenshot uses synthetic data.*
 
 Run one daemon to manage SQLite files through gRPC or REST, explore data in a browser, and find existing databases across your development directories.
 
