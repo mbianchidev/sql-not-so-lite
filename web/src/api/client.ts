@@ -1,5 +1,3 @@
-const BASE_URL = import.meta.env.DEV ? 'http://localhost:9147' : '';
-
 export interface DBInfo {
   Name: string;
   Path: string;
@@ -68,6 +66,131 @@ export interface StatsInfo {
   memory_alloc: number;
   memory_sys: number;
   goroutines: number;
+}
+
+export type APISource =
+  | { managed_database: string; discovered_id?: never }
+  | { discovered_id: number; managed_database?: never };
+
+export interface APIExposure {
+  alias: string;
+  database_id: number;
+  managed_database?: string;
+  tables: string[];
+  writable: boolean;
+}
+
+let adminToken: string | null = null;
+const authenticationListeners = new Set<() => void>();
+
+export function setAdminToken(token: string | null) { adminToken = token; }
+export function hasAdminToken() { return adminToken !== null; }
+export function onAuthenticationRequired(listener: () => void) {
+  authenticationListeners.add(listener);
+  return () => { authenticationListeners.delete(listener); };
+}
+export function signOut() {
+  adminToken = null;
+  authenticationListeners.forEach((listener) => listener());
+}
+
+export class APIError extends Error {
+  readonly status: number;
+  constructor(message: string, status: number) { super(message); this.status = status; }
+}
+
+export const CRUD_METHODS = ['GET', 'POST', 'PATCH', 'DELETE'] as const;
+export type CRUDMethod = typeof CRUD_METHODS[number];
+
+export interface APIRequestOptions {
+  method: CRUDMethod;
+  url: string;
+  headers: string;
+  body: string;
+  token: string;
+  useAdminSession: boolean;
+  signal: AbortSignal;
+}
+
+export interface APIRequestResponse {
+  status: number;
+  statusText: string;
+  headers: Record<string, string>;
+  body: string;
+  durationMs: number;
+  truncated: boolean;
+}
+
+export async function sendAPIRequest(options: APIRequestOptions): Promise<APIRequestResponse> {
+  const url = new URL(options.url, window.location.origin);
+  if (url.origin !== window.location.origin) throw new Error('Requests must use the same origin as this workspace.');
+  if (!url.pathname.startsWith('/api/data/')) throw new Error("The request editor only calls this daemon's /api/data/ routes.");
+  if (url.username || url.password || url.hash) throw new Error('Use the authentication controls for credentials and omit URL fragments.');
+  let values: unknown;
+  try { values = JSON.parse(options.headers || '{}'); }
+  catch { throw new Error('Request headers must be valid JSON.'); }
+  if (!values || typeof values !== 'object' || Array.isArray(values)) throw new Error('Request headers must be a JSON object with string values.');
+  const headers = new Headers();
+  for (const [name, value] of Object.entries(values)) {
+    if (typeof value !== 'string') throw new Error(`Header "${name}" must have a string value.`);
+    if (name.toLowerCase() === 'authorization') throw new Error('Set Authorization using the request authentication controls.');
+    headers.set(name, value);
+  }
+  const token = options.useAdminSession ? adminToken : options.token.trim();
+  if (options.useAdminSession && !token) throw new Error('Sign in before using the admin session.');
+  if (token) headers.set('Authorization', `Bearer ${token}`);
+  const hasBody = options.method === 'POST' || options.method === 'PATCH';
+  if (hasBody) {
+    try { JSON.parse(options.body); }
+    catch { throw new Error('Request body must be valid JSON.'); }
+    if (new TextEncoder().encode(options.body).length > 1024 * 1024) throw new Error('Request body exceeds the 1 MiB API limit.');
+    if (!headers.has('Content-Type')) headers.set('Content-Type', 'application/json');
+  }
+  const started = performance.now();
+  const signal = AbortSignal.any([options.signal, AbortSignal.timeout(30_000)]);
+  const response = await fetch(url.href, {
+    method: options.method,
+    headers,
+    body: hasBody ? options.body : undefined,
+    signal,
+    credentials: 'omit',
+    redirect: 'error',
+    cache: 'no-store',
+  });
+  const reader = response.body?.getReader();
+  const decoder = new TextDecoder();
+  const chunks: string[] = [];
+  const maximum = 1024 * 1024;
+  let bytes = 0;
+  let truncated = false;
+  if (reader) {
+    try {
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        const remaining = maximum - bytes;
+        const captured = value.subarray(0, remaining);
+        chunks.push(decoder.decode(captured, { stream: true }));
+        bytes += captured.byteLength;
+        if (captured.byteLength < value.byteLength) {
+          truncated = true;
+          await reader.cancel();
+          break;
+        }
+      }
+      chunks.push(decoder.decode());
+    } finally {
+      reader.releaseLock();
+    }
+  }
+  return {
+    status: response.status,
+    statusText: response.statusText,
+    headers: Object.fromEntries(response.headers.entries()),
+    body: chunks.join(''),
+    durationMs: performance.now() - started,
+    truncated,
+  };
 }
 
 export interface DiscoveredDB {
@@ -227,19 +350,32 @@ function toSchemaTransitionInfo(transition: RawSchemaTransitionInfo): SchemaTran
 }
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
-  const res = await fetch(`${BASE_URL}${path}`, {
+  const requestToken = adminToken;
+  const headers = new Headers(options?.headers);
+  headers.set('Content-Type', 'application/json');
+  if (requestToken) headers.set('Authorization', `Bearer ${requestToken}`);
+  const res = await fetch(path, {
     ...options,
-    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    headers,
   });
 
-  const data = await res.json();
+  const data = res.status === 204 ? undefined : await res.json();
   if (!res.ok) {
-    throw new Error(data.error || `Request failed: ${res.status}`);
+    if (res.status === 401 && adminToken === requestToken) signOut();
+    throw new APIError(data?.error || `Request failed: ${res.status}`, res.status);
   }
   return data as T;
 }
 
 export const api = {
+  getAuthentication: () => request<{ required: boolean }>('/api/auth'),
+  listExposures: () => request<APIExposure[]>('/api/exposures'),
+  createExposure: (source: APISource, alias: string, tables: string[], writable: boolean) =>
+    request<{ exposure: APIExposure; token: string }>('/api/exposures', {
+      method: 'POST', body: JSON.stringify({ ...source, alias, tables, writable }),
+    }),
+  revokeExposure: (alias: string) => request<void>(`/api/exposures/${encodeURIComponent(alias)}`, { method: 'DELETE' }),
+  rotateExposure: (alias: string) => request<{ token: string }>(`/api/exposures/${encodeURIComponent(alias)}/token`, { method: 'POST' }),
   listDatabases: () => request<DBInfo[]>('/api/databases'),
 
   createDatabase: (name: string) =>

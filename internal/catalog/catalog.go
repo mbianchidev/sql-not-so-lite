@@ -143,11 +143,21 @@ CREATE TABLE IF NOT EXISTS schema_transitions (
 	detected_at    TEXT NOT NULL DEFAULT (datetime('now')),
 	UNIQUE(database_id, from_version, to_version)
 );
+
+CREATE TABLE IF NOT EXISTS api_exposures (
+	alias TEXT PRIMARY KEY,
+	database_id INTEGER NOT NULL REFERENCES discovered_databases(id) ON DELETE CASCADE,
+	managed_database TEXT NOT NULL DEFAULT '',
+	tables_json TEXT NOT NULL,
+	writable INTEGER NOT NULL DEFAULT 0,
+	token_hash TEXT NOT NULL
+);
 `
 
 type Catalog struct {
-	db *sql.DB
-	mu sync.RWMutex
+	db   *sql.DB
+	mu   sync.RWMutex
+	path string
 }
 
 func nullStr(s string) interface{} {
@@ -254,7 +264,7 @@ func Open(dataDir string) (*Catalog, error) {
 		return nil, err
 	}
 
-	return &Catalog{db: db}, nil
+	return &Catalog{db: db, path: filepath.Join(dataDir, "catalog.sqlite")}, nil
 }
 
 func ensureDiscoveryColumns(db *sql.DB) error {

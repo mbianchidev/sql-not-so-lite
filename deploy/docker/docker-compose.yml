@@ -6,15 +6,17 @@ services:
       no_cache: true
     container_name: sql-not-so-lite
     ports:
-      - "50051:50051"
-      - "9147:9147"
+      - "127.0.0.1:50051:50051"
+      - "127.0.0.1:9147:9147"
     volumes:
       - sqnsl-data:/data
     restart: unless-stopped
     environment:
-      - SQNSL_DATA_DIR=/data
+      SQNSL_DATA_DIR: /data
+      SQNSL_BIND_ADDRESS: 0.0.0.0
+      SQNSL_AUTH_TOKEN: ${SQNSL_AUTH_TOKEN:?Export a strong SQNSL_AUTH_TOKEN before starting Compose}
     healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://localhost:9147/api/health"]
+      test: ["CMD-SHELL", "wget -q -O /dev/null --header=\"Authorization: Bearer $$SQNSL_AUTH_TOKEN\" http://127.0.0.1:9147/api/health"]
       interval: 30s
       timeout: 5s
       retries: 3

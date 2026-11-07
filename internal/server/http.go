@@ -10,6 +10,7 @@ import (
 	"io"
 	"io/fs"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -80,36 +81,61 @@ func NewHTTPServer(svc *service.DatabaseService, port int, cat *catalog.Catalog,
 }
 
 func (s *HTTPServer) Start() error {
+	settings := serverSettings(s.cfg)
+	cfg := config.DefaultConfig()
+	cfg.Server = settings
+	if err := cfg.ValidateNetwork(); err != nil {
+		return err
+	}
+	handler, err := s.Handler()
+	if err != nil {
+		return err
+	}
+	s.server = &http.Server{
+		Addr:    net.JoinHostPort(settings.BindAddress, strconv.Itoa(s.port)),
+		Handler: handler, ReadTimeout: 30 * time.Second, WriteTimeout: 5 * time.Minute, IdleTimeout: 120 * time.Second,
+	}
+	log.Printf("HTTP server listening on %s", s.server.Addr)
+	return s.server.ListenAndServe()
+}
+
+func (s *HTTPServer) Handler() (http.Handler, error) {
 	mux := http.NewServeMux()
+	admin := func(handler http.HandlerFunc) http.HandlerFunc { return s.corsMiddleware(s.adminMiddleware(handler)) }
 
 	// REST API routes
-	mux.HandleFunc("/api/databases", s.corsMiddleware(s.handleDatabases))
-	mux.HandleFunc("/api/databases/", s.corsMiddleware(s.handleDatabase))
-	mux.HandleFunc("/api/health", s.corsMiddleware(s.handleHealth))
-	mux.HandleFunc("/api/stats", s.corsMiddleware(s.handleStats))
-	mux.HandleFunc("/api/scan", s.corsMiddleware(s.handleScan))
-	mux.HandleFunc("/api/discovered", s.corsMiddleware(s.handleDiscovered))
-	mux.HandleFunc("/api/discovered/", s.corsMiddleware(s.handleDiscoveredItem))
+	mux.HandleFunc("/api/databases", admin(s.handleDatabases))
+	mux.HandleFunc("/api/databases/", admin(s.handleDatabase))
+	mux.HandleFunc("/api/health", admin(s.handleHealth))
+	mux.HandleFunc("/api/stats", admin(s.handleStats))
+	mux.HandleFunc("/api/scan", admin(s.handleScan))
+	mux.HandleFunc("/api/discovered", admin(s.handleDiscovered))
+	mux.HandleFunc("/api/discovered/", admin(s.handleDiscoveredItem))
+	mux.HandleFunc("/api/auth", s.corsMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		w.Header().Set("Cache-Control", "no-store")
+		writeJSON(w, http.StatusOK, map[string]bool{"required": serverSettings(s.cfg).AuthToken != ""})
+	}))
+	mux.HandleFunc("/api/exposures", admin(s.handleExposures))
+	mux.HandleFunc("/api/exposures/{alias}", admin(s.handleExposure))
+	mux.HandleFunc("/api/exposures/{alias}/token", admin(s.handleExposureToken))
+	mux.HandleFunc("/api/data/{alias}", s.corsMiddleware(s.handleData))
+	mux.HandleFunc("/api/data/{alias}/{table}", s.corsMiddleware(s.handleData))
+	mux.HandleFunc("/api/", admin(func(w http.ResponseWriter, r *http.Request) { writeError(w, http.StatusNotFound, "not found") }))
 
 	// Serve embedded GUI
 	staticFS, err := fs.Sub(staticFiles, "static")
 	if err != nil {
-		log.Printf("Warning: no embedded GUI files found, GUI will not be available: %v", err)
+		return nil, fmt.Errorf("load embedded GUI: %w", err)
 	} else {
 		fileServer := http.FileServer(http.FS(staticFS))
 		mux.Handle("/", spaHandler(fileServer, staticFS))
 	}
 
-	s.server = &http.Server{
-		Addr:         fmt.Sprintf(":%d", s.port),
-		Handler:      mux,
-		ReadTimeout:  30 * time.Second,
-		WriteTimeout: 5 * time.Minute,
-		IdleTimeout:  120 * time.Second,
-	}
-
-	log.Printf("HTTP server listening on :%d", s.port)
-	return s.server.ListenAndServe()
+	return mux, nil
 }
 
 func (s *HTTPServer) Stop(ctx context.Context) error {
@@ -145,7 +171,7 @@ func (s *HTTPServer) corsMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
 
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusOK)
@@ -403,16 +429,20 @@ func (s *HTTPServer) handleRows(w http.ResponseWriter, r *http.Request, dbName, 
 }
 
 func (s *HTTPServer) registerCreatedDatabase(info *service.DBInfo) error {
+	return registerDatabase(s.catalog, info)
+}
+
+func registerDatabase(cat *catalog.Catalog, info *service.DBInfo) error {
 	fileInfo, err := os.Stat(info.Path)
 	if err != nil {
 		return fmt.Errorf("read database file: %w", err)
 	}
-	catalogName, err := s.availableCatalogName(info.Name, info.Path)
+	catalogName, err := availableCatalogName(cat, info.Name, info.Path)
 	if err != nil {
 		return err
 	}
 	sqliteVersion, pageSize, _ := scanner.ReadSQLiteHeader(info.Path)
-	_, err = s.catalog.UpsertDiscovered(&catalog.DiscoveredDB{
+	_, err = cat.UpsertDiscovered(&catalog.DiscoveredDB{
 		Name:          catalogName,
 		SourcePath:    info.Path,
 		SQLiteVersion: sqliteVersion,
@@ -426,13 +456,13 @@ func (s *HTTPServer) registerCreatedDatabase(info *service.DBInfo) error {
 	return err
 }
 
-func (s *HTTPServer) availableCatalogName(name, path string) (string, error) {
+func availableCatalogName(cat *catalog.Catalog, name, path string) (string, error) {
 	for suffix := 1; ; suffix++ {
 		candidate := name
 		if suffix > 1 {
 			candidate = fmt.Sprintf("%s (%d)", name, suffix)
 		}
-		existing, err := s.catalog.GetDiscoveredByName(candidate)
+		existing, err := cat.GetDiscoveredByName(candidate)
 		switch {
 		case err == sql.ErrNoRows:
 			return candidate, nil

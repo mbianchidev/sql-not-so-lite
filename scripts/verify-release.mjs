@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { execFileSync, spawn } from 'node:child_process'
-import { createHash, randomUUID } from 'node:crypto'
+import { createHash, randomBytes, randomUUID } from 'node:crypto'
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:net'
 import { basename, join, resolve } from 'node:path'
@@ -42,6 +42,8 @@ async function reservePort() {
 }
 
 async function smoke(binary, home, image) {
+  const token = randomBytes(32).toString('base64url')
+  const headers = { Authorization: `Bearer ${token}` }
   mkdirSync(join(home, '.sql-not-so-lite'), { recursive: true })
   mkdirSync(join(home, 'scan'), { recursive: true })
   const http = await reservePort()
@@ -59,12 +61,14 @@ async function smoke(binary, home, image) {
   writeFileSync(join(home, '.sql-not-so-lite', 'config.toml'), `[server]
 http_port = ${image ? 9147 : httpPort}
 grpc_port = ${image ? 50051 : grpcPort}
+bind_address = "${image ? '0.0.0.0' : '127.0.0.1'}"
 `)
   const env = image ? process.env : {
     ...process.env,
     HOME: home,
     SQNSL_DATA_DIR: join(home, 'databases'),
     SQNSL_SCAN_ROOT: join(home, 'scan'),
+    SQNSL_AUTH_TOKEN: token,
   }
   const versionOutput = image
     ? runContainer([image, 'version'])
@@ -89,6 +93,7 @@ grpc_port = ${image ? 50051 : grpcPort}
         '--user', `${process.getuid()}:${process.getgid()}`,
         '--mount', `type=bind,source=${home},target=/data`,
         '--publish', `127.0.0.1:${httpPort}:9147`,
+        '--env', `SQNSL_AUTH_TOKEN=${token}`,
         image, 'start',
       ])
       created = true
@@ -100,7 +105,7 @@ grpc_port = ${image ? 50051 : grpcPort}
       if (startError) throw startError
       if (child) assert.equal(child.exitCode, null, `Daemon exited before readiness:\n${logs}`)
       try {
-        const response = await fetch(`${url}/api/health`, { signal: AbortSignal.timeout(2000) })
+        const response = await fetch(`${url}/api/health`, { headers, signal: AbortSignal.timeout(2000) })
         assert.ok(response.ok, `Health endpoint returned ${response.status}`)
         assert.equal((await response.json()).version, version)
         ready = true

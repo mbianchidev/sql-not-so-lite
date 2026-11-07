@@ -21,7 +21,7 @@ RUN apk add --no-cache ca-certificates
 COPY --from=go-builder /sqnsl /usr/local/bin/sqnsl
 
 RUN mkdir -p /data
-ENV HOME=/data SQNSL_DATA_DIR=/data SQNSL_SCAN_ROOT=/data
+ENV HOME=/data SQNSL_DATA_DIR=/data SQNSL_SCAN_ROOT=/data SQNSL_BIND_ADDRESS=0.0.0.0
 WORKDIR /data
 
 EXPOSE 50051 9147

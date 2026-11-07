@@ -1,10 +1,22 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="dark">
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>web</title>
+    <meta name="theme-color" content="#151719" />
+    <meta name="description" content="A local workspace for managing and exploring SQLite databases." />
+    <script>
+      try {
+        if (localStorage.getItem('sqnsl-theme') === 'light') {
+          document.documentElement.dataset.theme = 'light';
+          document.querySelector('meta[name="theme-color"]').content = '#f6f7f8';
+        }
+      } catch (error) {
+        console.error('Unable to read theme preference', error);
+      }
+    </script>
+    <title>sql-not-so-lite | SQLite workspace</title>
   </head>
   <body>
     <div id="root"></div>

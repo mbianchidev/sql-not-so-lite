@@ -4,7 +4,7 @@
 
 ![Schema viewer and column editor in the sql-not-so-lite web interface](docs/images/schema-view.png)
 
-*Browse tables and edit managed database schemas in the embedded web UI.*
+*A dark-by-default SQLite workspace with searchable navigation, schema editing, and local SQL tools. Screenshot uses synthetic data.*
 
 A local SQLite manager for application developers. Run one daemon to manage SQLite files through gRPC or REST, explore data in a browser, and find existing databases across your development directories.
 
@@ -36,7 +36,7 @@ curl -fsS http://localhost:9147/api/health
 
 Stop it with **Ctrl+C**. See [installation](docs/installation.md) for a persistent binary, user services, Docker, and troubleshooting.
 
-> **Trusted environments only:** HTTP and gRPC listen on all network interfaces without built-in authentication or TLS. Run as your normal user and restrict network access. Without an explicit scan root, the daemon scans your home directory.
+> **Safe defaults:** HTTP and gRPC bind to loopback. External binds require an admin token; use a TLS-terminating proxy for remote clients. Run as your normal user. Without an explicit scan root, the daemon scans your home directory. See [authentication](docs/configuration.md#authentication-and-network-access).
 
 ## Why sql-not-so-lite
 
@@ -61,6 +61,7 @@ Follow the [configuration reference](docs/configuration.md) for storage paths, s
 ## Features
 
 - Create, list, query, and delete managed databases through gRPC or REST.
+- Expose managed or discovered SQLite files as [scoped JSON CRUD APIs](docs/crud.md), with table allowlists, individual tokens, and explicit write opt-in.
 - Browse and insert rows, edit supported schemas, run SQL with Monaco, and export query results as CSV or JSON.
 - Search discovered databases, inspect them read-only, preserve favorites, and show repository associations.
 - Maintain local table-level replicas and restore stored snapshots, with the [current recovery and schema-history limits](docs/usage.md#replication-and-recovery).

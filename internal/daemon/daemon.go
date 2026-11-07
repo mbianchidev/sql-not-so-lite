@@ -38,6 +38,9 @@ type Daemon struct {
 }
 
 func New(cfg *config.Config) (*Daemon, error) {
+	if err := cfg.ValidateNetwork(); err != nil {
+		return nil, err
+	}
 	if err := cfg.EnsureDirs(); err != nil {
 		return nil, fmt.Errorf("failed to create directories: %w", err)
 	}
@@ -71,7 +74,7 @@ func New(cfg *config.Config) (*Daemon, error) {
 		cfg:          cfg,
 		manager:      manager,
 		svc:          svc,
-		grpcServer:   server.NewGRPCServer(svc, cfg.Server.GRPCPort),
+		grpcServer:   server.NewGRPCServer(svc, cfg.Server.GRPCPort, cat, cfg),
 		httpServer:   server.NewHTTPServer(svc, cfg.Server.HTTPPort, cat, cfg),
 		idleTracker:  tracker,
 		catalog:      cat,

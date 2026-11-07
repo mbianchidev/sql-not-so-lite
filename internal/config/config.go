@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -19,9 +20,12 @@ type Config struct {
 }
 
 type ServerConfig struct {
-	GRPCPort int    `toml:"grpc_port"`
-	HTTPPort int    `toml:"http_port"`
-	DataDir  string `toml:"data_dir"`
+	GRPCPort      int    `toml:"grpc_port"`
+	HTTPPort      int    `toml:"http_port"`
+	DataDir       string `toml:"data_dir"`
+	BindAddress   string `toml:"bind_address"`
+	AuthTokenFile string `toml:"auth_token_file"`
+	AuthToken     string `toml:"-" json:"-"`
 }
 
 type IdleConfig struct {
@@ -87,9 +91,10 @@ func DefaultConfig() *Config {
 
 	return &Config{
 		Server: ServerConfig{
-			GRPCPort: 50051,
-			HTTPPort: 9147,
-			DataDir:  filepath.Join(baseDir, "databases"),
+			GRPCPort:    50051,
+			HTTPPort:    9147,
+			DataDir:     filepath.Join(baseDir, "databases"),
+			BindAddress: "127.0.0.1",
 		},
 		Idle: IdleConfig{
 			ConnectionTimeout: "5m",
@@ -137,10 +142,52 @@ func Load() (*Config, error) {
 	}
 
 	applyEnvironmentOverrides(cfg)
+	if token, ok := os.LookupEnv("SQNSL_AUTH_TOKEN"); ok {
+		cfg.Server.AuthToken = strings.TrimSpace(token)
+		if cfg.Server.AuthToken == "" {
+			return nil, fmt.Errorf("SQNSL_AUTH_TOKEN must not be empty")
+		}
+	} else if cfg.Server.AuthTokenFile != "" {
+		data, err := os.ReadFile(cfg.Server.AuthTokenFile)
+		if err != nil {
+			return nil, fmt.Errorf("read admin token file: %w", err)
+		}
+		cfg.Server.AuthToken = strings.TrimSpace(string(data))
+		if cfg.Server.AuthToken == "" {
+			return nil, fmt.Errorf("admin token file is empty")
+		}
+	}
+	if err := cfg.ValidateNetwork(); err != nil {
+		return nil, err
+	}
 	return cfg, nil
 }
 
+func (c *Config) ValidateNetwork() error {
+	if c.Server.AuthToken != "" && len(c.Server.AuthToken) < 32 {
+		return fmt.Errorf("admin token must contain at least 32 characters")
+	}
+	host := c.Server.BindAddress
+	if host == "" {
+		return fmt.Errorf("server.bind_address must be an IP address or localhost")
+	}
+	if host == "localhost" {
+		return nil
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return fmt.Errorf("server.bind_address must be an IP address or localhost")
+	}
+	if !ip.IsLoopback() && c.Server.AuthToken == "" {
+		return fmt.Errorf("non-loopback listeners require SQNSL_AUTH_TOKEN or server.auth_token_file")
+	}
+	return nil
+}
+
 func applyEnvironmentOverrides(cfg *Config) {
+	if address := strings.TrimSpace(os.Getenv("SQNSL_BIND_ADDRESS")); address != "" {
+		cfg.Server.BindAddress = address
+	}
 	if dataDir := strings.TrimSpace(os.Getenv("SQNSL_DATA_DIR")); dataDir != "" {
 		cfg.Server.DataDir = filepath.Clean(dataDir)
 	}

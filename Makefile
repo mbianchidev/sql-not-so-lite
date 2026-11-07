@@ -70,8 +70,10 @@ release-snapshot:
 
 # Docker run
 docker-run:
+	@test -n "$$SQNSL_AUTH_TOKEN" || (echo "Export a strong SQNSL_AUTH_TOKEN first" >&2; exit 1)
 	docker run -d --name sqnsl \
-		-p 50051:50051 -p 9147:9147 \
+		-p 127.0.0.1:50051:50051 -p 127.0.0.1:9147:9147 \
+		-e SQNSL_AUTH_TOKEN \
 		-v sqnsl-data:/data \
 		sql-not-so-lite:$(VERSION)
 

@@ -78,11 +78,13 @@ The GHCR image supports `linux/amd64` and `linux/arm64`. Stable tags include
 the version without `v` (for example, `:0.0.3`) and `:latest`.
 
 ```bash
+export SQNSL_AUTH_TOKEN="$(openssl rand -hex 32)"
 docker run --rm \
   -p 127.0.0.1:9147:9147 -p 127.0.0.1:50051:50051 \
   -v sqnsl-data:/data \
   -v "$HOME/example-databases:/scan:ro" \
   -e SQNSL_SCAN_ROOT=/scan \
+  -e SQNSL_AUTH_TOKEN -e SQNSL_BIND_ADDRESS=0.0.0.0 \
   ghcr.io/mbianchidev/sql-not-so-lite:0.0.3
 ```
 
@@ -95,6 +97,10 @@ the persistent volume. Managed databases and the catalog also use `/data`.
 The default scan root is `/data`; override `SQNSL_SCAN_ROOT` for source mounts.
 An image upgrade must reuse the same data volume.
 
+Container listeners bind internally on all interfaces so published ports work, and require the admin token. The examples publish only on host loopback. Sign in to the GUI with that token; use a TLS-terminating proxy for remote access.
+
+These authentication defaults apply to builds containing the CRUD API feature. Earlier release images may retain their original listener/authentication behavior; use the documentation matching the installed version.
+
 The release Dockerfile copies the already verified GoReleaser binaries. Its
 only build-time command runs on the builder's native architecture, so creating
 the multiarch image does not require installing QEMU on the host.
@@ -102,7 +108,7 @@ the multiarch image does not require installing QEMU on the host.
 ## CI policy and reuse
 
 Draft pull requests run Go tests/build, mocked release/formula tests, and frontend
-installation, lint, and build.
+installation, lint, build, and mocked browser workflows.
 Marking a PR ready runs the full packaging and native-platform matrix; subsequent
 pushes to a ready PR also run the full suite. Returning to draft restores the
 lightweight checks. Superseded PR runs are canceled, but release runs are not.

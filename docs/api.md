@@ -2,7 +2,9 @@
 
 [Documentation index](README.md) | [Usage](usage.md) | [Protobuf contract](../api/proto/sqnsl.proto)
 
-The daemon must be running. The default endpoints are gRPC at `localhost:50051` and HTTP at `http://localhost:9147`. Both servers listen on all interfaces and have no built-in authentication or TLS; restrict access to trusted clients.
+The daemon must be running. The default endpoints are gRPC at `localhost:50051` and HTTP at `http://localhost:9147`, bound to loopback. External binds require an admin bearer token. See [authentication and TLS requirements](configuration.md#authentication-and-network-access).
+
+When admin authentication is enabled, add `Authorization: Bearer TOKEN` to REST requests and gRPC metadata. For example, use `curl -H "Authorization: Bearer $SQNSL_AUTH_TOKEN" ...` or `grpcurl -H "Authorization: Bearer $SQNSL_AUTH_TOKEN" ...`. Scoped CRUD tokens do not authorize management, raw SQL, or gRPC.
 
 ## gRPC
 
@@ -60,6 +62,23 @@ Managed query requests accept `sql`, optional string `params`, and optional `lim
 
 ## REST endpoints
 
+### Schema-driven CRUD
+
+See the [CRUD guide](crud.md) for registration, scoped tokens, typed JSON, filters, and write safety.
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET | `/api/data/:alias` | Read allowed table schemas and keys |
+| GET | `/api/data/:alias/:table` | Filter, sort, project, and paginate JSON rows |
+| POST | `/api/data/:alias/:table` | Create one row |
+| PATCH | `/api/data/:alias/:table?FIELD=eq.VALUE` | Update exactly one matching row |
+| DELETE | `/api/data/:alias/:table?FIELD=eq.VALUE` | Delete exactly one matching row |
+| GET, POST | `/api/exposures` | List/create scoped database APIs |
+| GET, PUT, DELETE | `/api/exposures/:alias` | Inspect/update/revoke an API |
+| POST | `/api/exposures/:alias/token` | Rotate its token |
+
+The existing query endpoints retain their original response format. CRUD endpoints use native JSON objects instead of the string-based query format below.
+
 ### Managed databases
 
 | Method | Path | Purpose |
@@ -104,6 +123,7 @@ REST restore targets the replica, unlike the CLI's default source restore. Read 
 |--------|------|---------|
 | GET | `/api/health` | Version and health status |
 | GET | `/api/stats` | Version, uptime, memory, active connections, and goroutine count |
+| GET | `/api/auth` | Public boolean indicating whether admin authentication is required |
 
 ## Query result limitations
 

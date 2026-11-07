@@ -12,17 +12,25 @@ Local replicas and stored snapshots are separate files. Neither discovery nor re
 
 Start the daemon and open [http://localhost:9147](http://localhost:9147), or run `sqnsl gui` to open its configured URL.
 
-1. Create a managed database from the sidebar, or select one already listed.
-2. Open **Schema** to create a table and define its fields in order.
+1. Use **+** beside **Managed databases** to create a database, or search the sidebar and select an existing one.
+2. Open **Schema**, then **New table**, to create a table and define its fields in order.
 3. Open **Browse** to inspect rows or insert records with explicit values, NULLs, or column defaults.
 4. Use **SQL Editor** for SQL with Monaco syntax highlighting and Ctrl+Enter/Cmd+Enter execution.
 5. Sort query results or export the returned rows as CSV or JSON.
 
-The header offers a light/dark theme toggle and runtime statistics. The sidebar shows active/idle database state.
+The workspace starts in **dark mode**, regardless of the operating system's theme. The header toggle saves your explicit light/dark preference in your browser and applies it to the SQL editors too. The footer shows the daemon's connection state and runtime statistics.
+
+The sidebar shows active/idle databases and expands the selected database's tables. On smaller screens, open it with the menu button; Escape closes it. Workspace tabs support arrow-key navigation.
 
 The schema editor can add fields and edit supported field names, types, nullability, and defaults. Editing rebuilds the table in one transaction while preserving column order, data, indexes, and triggers. Schemas with constraints the editor cannot safely reconstruct are rejected rather than silently weakened.
 
-The **Discovery** menu supports search by name, path, repository, status, and database metadata; favorites; read-only schema/table/SELECT inspection; replication status; and stored snapshot/schema-history views.
+The **Discovery** menu supports directory scans and search by name, path, repository, status, and database metadata. Star files and use **Favorites** to narrow the catalog. Select a file to open its read-only schema/table/SELECT inspector, then use **Back to databases** to return. Replication and stored snapshot/schema-history actions remain available.
+
+The SQL editor and its worker are bundled with the application; editor startup does not require a third-party CDN.
+
+Use **Expose API** in a managed database header or a discovered file's inspector to create a table-scoped JSON CRUD API. APIs default to read-only; **Allow writes** explicitly enables mutation, including mutation of discovered original files. Copy the one-time token and example request, or rotate/revoke access later. The inspector itself stays read-only. See the [CRUD guide](crud.md).
+
+Choose **Test API** to open the built-in request editor. Select a CRUD method, edit the URL, headers, and JSON body, then **Send** to see HTTP status, timing, headers, and the raw response. Scoped tokens are used by default; admin credentials require an explicit selection. **Cancel** stops waiting but cannot roll back an already-applied write. See [in-UI requests and limits](crud.md#send-requests-inside-the-ui).
 
 ## CLI reference
 

@@ -9,6 +9,8 @@ import (
 	"time"
 
 	pb "github.com/mbianchidev/sql-not-so-lite/api/proto"
+	"github.com/mbianchidev/sql-not-so-lite/internal/catalog"
+	"github.com/mbianchidev/sql-not-so-lite/internal/config"
 	"github.com/mbianchidev/sql-not-so-lite/internal/service"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/reflection"
@@ -22,28 +24,42 @@ type GRPCServer struct {
 	server    *grpc.Server
 	startTime time.Time
 	port      int
+	catalog   *catalog.Catalog
+	cfg       *config.Config
 }
 
-func NewGRPCServer(svc *service.DatabaseService, port int) *GRPCServer {
+func NewGRPCServer(svc *service.DatabaseService, port int, cat *catalog.Catalog, cfg *config.Config) *GRPCServer {
 	return &GRPCServer{
 		svc:       svc,
 		port:      port,
 		startTime: time.Now(),
+		catalog:   cat, cfg: cfg,
 	}
 }
 
 func (s *GRPCServer) Start() error {
-	lis, err := net.Listen("tcp", fmt.Sprintf(":%d", s.port))
+	settings := serverSettings(s.cfg)
+	cfg := config.DefaultConfig()
+	cfg.Server = settings
+	if err := cfg.ValidateNetwork(); err != nil {
+		return err
+	}
+	lis, err := net.Listen("tcp", net.JoinHostPort(settings.BindAddress, fmt.Sprint(s.port)))
 	if err != nil {
 		return fmt.Errorf("failed to listen on port %d: %w", s.port, err)
 	}
 
-	s.server = grpc.NewServer()
-	pb.RegisterSqlNotSoLiteServer(s.server, s)
-	reflection.Register(s.server)
-
-	log.Printf("gRPC server listening on :%d", s.port)
+	s.server = s.handler()
+	log.Printf("gRPC server listening on %s", lis.Addr())
 	return s.server.Serve(lis)
+}
+
+func (s *GRPCServer) handler() *grpc.Server {
+	settings := serverSettings(s.cfg)
+	result := grpc.NewServer(grpc.UnaryInterceptor(adminUnary(settings.AuthToken)), grpc.StreamInterceptor(adminStream(settings.AuthToken)))
+	pb.RegisterSqlNotSoLiteServer(result, s)
+	reflection.Register(result)
+	return result
 }
 
 func (s *GRPCServer) Stop() {
@@ -56,6 +72,12 @@ func (s *GRPCServer) CreateDatabase(ctx context.Context, req *pb.CreateDatabaseR
 	info, err := s.svc.CreateDatabase(ctx, req.Name)
 	if err != nil {
 		return nil, err
+	}
+	if err := registerDatabase(s.catalog, info); err != nil {
+		if rollback := s.svc.DropDatabase(ctx, info.Name); rollback != nil {
+			return nil, fmt.Errorf("register database: %v; rollback: %w", err, rollback)
+		}
+		return nil, fmt.Errorf("register database: %w", err)
 	}
 	return &pb.CreateDatabaseResponse{
 		Name: info.Name,
@@ -84,9 +106,16 @@ func (s *GRPCServer) ListDatabases(ctx context.Context, _ *pb.ListDatabasesReque
 }
 
 func (s *GRPCServer) DropDatabase(ctx context.Context, req *pb.DropDatabaseRequest) (*pb.DropDatabaseResponse, error) {
-	err := s.svc.DropDatabase(ctx, req.Name)
+	info, err := s.svc.GetDatabaseInfo(ctx, req.Name)
 	if err != nil {
 		return nil, err
+	}
+	err = s.svc.DropDatabase(ctx, req.Name)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.catalog.DeleteDiscoveredByPath(info.Path); err != nil {
+		return nil, fmt.Errorf("database dropped but catalog cleanup failed: %w", err)
 	}
 	return &pb.DropDatabaseResponse{Success: true}, nil
 }
