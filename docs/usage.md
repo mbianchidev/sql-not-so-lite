@@ -30,6 +30,8 @@ The SQL editor and its worker are bundled with the application; editor startup d
 
 Use **Expose API** in a managed database header or a discovered file's inspector to create a table-scoped JSON CRUD API. APIs default to read-only; **Allow writes** explicitly enables mutation, including mutation of discovered original files. Copy the one-time token and example request, or rotate/revoke access later. The inspector itself stays read-only. See the [CRUD guide](crud.md).
 
+Choose **Test API** to open the built-in request editor. Select a CRUD method, edit the URL, headers, and JSON body, then **Send** to see HTTP status, timing, headers, and the raw response. Scoped tokens are used by default; admin credentials require an explicit selection. **Cancel** stops waiting but cannot roll back an already-applied write. See [in-UI requests and limits](crud.md#send-requests-inside-the-ui).
+
 ## CLI reference
 
 ```text

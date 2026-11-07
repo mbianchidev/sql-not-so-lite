@@ -17,6 +17,7 @@ export function createMockState() {
     authRequired: false,
     adminToken: 'synthetic-admin-token-for-browser-tests',
     exposures: [] as Array<{ alias: string; database_id: number; managed_database?: string; tables: string[]; writable: boolean }>,
+    dataRequests: [] as Array<{ method: string; url: string; headers: Record<string, string>; body: string | null }>,
     databases: [
       { Name: 'workbench_demo', Path: '/fixtures/workbench_demo.sqlite', SizeBytes: 24576, Active: true, TableCount: 2 },
       { Name: 'analytics_demo', Path: '/fixtures/analytics_demo.sqlite', SizeBytes: 12288, Active: false, TableCount: 1 },
@@ -51,6 +52,21 @@ export async function mockApi(page: Page, state = createMockState()) {
     const failure = state.failures.get(path);
     const respond = (json: unknown, status = 200) => route.fulfill({ status, json });
     if (path === '/api/auth') return respond({ required: state.authRequired });
+    if (path.startsWith('/api/data/')) {
+      state.dataRequests.push({ method, url: request.url(), headers: request.headers(), body: request.postData() });
+      const alias = path.split('/')[3];
+      const exposure = state.exposures.find((entry) => entry.alias === alias);
+      if (!exposure) return respond({ error: 'API not found' }, 404);
+      const authorization = request.headers().authorization;
+      if (authorization !== 'Bearer synthetic-scoped-token-for-browser-tests' && authorization !== `Bearer ${state.adminToken}`) return respond({ error: 'valid API bearer token required' }, 401);
+      if (method !== 'GET' && !exposure.writable) return respond({ error: 'this API is read-only' }, 403);
+      if (method === 'DELETE') return route.fulfill({ status: 204, headers: { 'x-fixture': 'deleted' } });
+      return route.fulfill({
+        status: method === 'POST' ? 201 : 200,
+        headers: { 'content-type': 'application/json', 'x-fixture': 'response' },
+        body: method === 'GET' ? '[{"id":9007199254740993,"sku":"SKU-001","stock":12,"note":null}]' : '{"id":1,"stock":12}',
+      });
+    }
     if (state.authRequired && request.headers().authorization !== `Bearer ${state.adminToken}`) {
       return respond({ error: 'admin bearer token required' }, 401);
     }

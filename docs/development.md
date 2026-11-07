@@ -60,6 +60,8 @@ Browser tests serve the production build on port 4178, intercept every API reque
 
 CRUD/authentication tests exercise real disposable SQLite fixtures through the HTTP router and gRPC's in-memory transport. They check native JSON, parameterized filters, single-row rollback, scoped-token rotation/revocation, source write opt-ins, and management/reflection authentication. GUI sign-in and exposure flows use synthetic tokens; tokens are never written into browser storage.
 
+Request-editor browser tests verify actual method/URL/header/body dispatch, exact large integer preservation, 204 and error responses, same-origin credential boundaries, cancellation, response-size limits, and responsive layouts. The sender uses a separate fetch path so a bad scoped token is shown as an HTTP response rather than signing out the administrator.
+
 ## Protobuf changes
 
 Install `protoc`, `protoc-gen-go`, and `protoc-gen-go-grpc` on `PATH` before regenerating:

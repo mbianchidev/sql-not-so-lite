@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api, type APIExposure, type APISource, type TableInfo } from '../api/client';
 import { Icon } from './Icon';
+import { APIRequestEditor } from './APIRequestEditor';
 
 interface Props {
   source: APISource;
@@ -19,6 +20,7 @@ export function APIExposurePanel({ source, tables, onClose }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [testing, setTesting] = useState<APIExposure | null>(null);
 
   const refresh = useCallback(async () => {
     const all = await api.listExposures();
@@ -47,6 +49,7 @@ export function APIExposurePanel({ source, tables, onClose }: Props) {
     void perform(async () => {
       await api.revokeExposure(entry.alias);
       if (credential?.exposure.alias === entry.alias) setCredential(null);
+      if (testing?.alias === entry.alias) setTesting(null);
       await refresh();
       setMessage(`API "${entry.alias}" revoked.`);
     });
@@ -61,6 +64,8 @@ export function APIExposurePanel({ source, tables, onClose }: Props) {
   };
   const endpoint = credential ? new URL(`/api/data/${credential.exposure.alias}/${encodeURIComponent(credential.exposure.tables[0])}`, window.location.origin).href : '';
   const example = credential ? `curl -H 'Authorization: Bearer ${credential.token}' '${endpoint}?limit=50'` : '';
+
+  if (testing) return <APIRequestEditor exposure={testing} initialToken={credential?.exposure.alias === testing.alias ? credential.token : ''} onClose={() => setTesting(null)} />;
 
   return (
     <section className="api-exposure-panel" aria-label="API exposure settings">
@@ -93,11 +98,12 @@ export function APIExposurePanel({ source, tables, onClose }: Props) {
         <label className="api-field">API token<input value={credential.token} readOnly aria-label="API token" /></label>
         <div className="api-copy-actions"><button className="btn-sm" onClick={() => void copy(credential.token)}><Icon name="copy" /> Copy token</button><button className="btn-sm" onClick={() => void copy(endpoint)}><Icon name="copy" /> Copy URL</button></div>
         <label className="api-field">Example request<textarea value={example} readOnly aria-label="Example request" rows={3} /></label>
-        <button className="btn-sm" onClick={() => void copy(example)}><Icon name="copy" /> Copy curl</button>
+        <div className="api-copy-actions"><button className="btn-sm" onClick={() => void copy(example)}><Icon name="copy" /> Copy curl</button><button className="btn-primary" onClick={() => setTesting(credential.exposure)} aria-label="Open request editor"><Icon name="play" /> Test API</button></div>
         <p className="api-warning">The token only grants access to these tables. Use HTTPS/TLS when accessing the daemon remotely. Never send the admin token to untrusted clients.</p>
       </div>}
       {exposures.length > 0 && <div className="api-exposure-list"><h4>Active APIs</h4>{exposures.map((entry) => <div className="api-exposure-row" key={entry.alias}>
         <div><strong>{entry.alias}</strong><span>{entry.writable ? 'Read & write' : 'Read-only'} / {entry.tables.join(', ')}</span></div>
+        <button className="btn-sm" onClick={() => setTesting(entry)} aria-label={`Open request editor for ${entry.alias}`}><Icon name="terminal" /> Test API</button>
         <button className="btn-sm" disabled={busy} aria-label={`Rotate token for ${entry.alias}`} onClick={() => {
           if (!confirm(`Rotate the token for "${entry.alias}"? The previous token stops working immediately.`)) return;
           void perform(async () => {

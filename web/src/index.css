@@ -475,6 +475,22 @@ tbody tr:hover td { background: var(--bg-tertiary); }
 .api-exposure-row > div { flex: 1; min-width: 100px; }
 .api-exposure-row strong { display: block; font-weight: 500; overflow-wrap: anywhere; }
 .api-exposure-row span { display: block; color: var(--text-muted); font-size: 0.75rem; overflow-wrap: anywhere; }
+.api-request-editor { padding: 20px; margin-bottom: 24px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-secondary); }
+.api-request-editor form { display: flex; flex-direction: column; gap: 18px; }
+.request-target { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; min-width: 0; }
+.request-target > input { flex: 1; min-width: 160px; font-family: var(--font-mono); font-size: 0.75rem; }
+.request-target select { min-width: 90px; }
+.request-authentication { display: grid; grid-template-columns: minmax(140px, 220px) minmax(0, 1fr); gap: 16px; }
+.request-authentication input { font-family: var(--font-mono); }
+.request-header-details summary, .response-header-details summary { color: var(--text-secondary); font-size: 0.75rem; cursor: pointer; }
+.request-header-details[open] summary, .response-header-details[open] summary { margin-bottom: 10px; }
+.api-request-editor > .api-warning { margin-top: 16px; }
+.api-request-editor > .error-msg { margin-top: 16px; }
+.api-response { display: flex; flex-direction: column; gap: 16px; margin-top: 24px; }
+.response-summary { display: flex; align-items: center; gap: 16px; padding-bottom: 12px; border-bottom: 1px solid var(--border); color: var(--text-muted); font-size: 0.75rem; }
+.response-status { color: var(--success); font-weight: 600; }
+.response-status.error { color: var(--danger); }
+.api-response textarea { min-height: 110px; }
 
 @media (max-width: 1200px) {
   .scan-strip { align-items: flex-start; flex-direction: column; gap: 16px; }
@@ -490,6 +506,10 @@ tbody tr:hover td { background: var(--bg-tertiary); }
 @media (max-width: 800px) {
   .api-exposure-panel { padding: 16px; }
   .api-exposure-form { grid-template-columns: minmax(0, 1fr); }
+  .request-authentication { grid-template-columns: minmax(0, 1fr); }
+  .api-request-editor { padding: 16px; }
+  .request-target > input { flex-basis: 100%; order: -1; }
+  .request-target input, .request-target select, .request-target button { min-height: 40px; }
   .api-table-option { min-height: 32px; }
   .workspace-heading-actions { justify-content: flex-start; }
   :root { --sql-editor-height: 190px; }

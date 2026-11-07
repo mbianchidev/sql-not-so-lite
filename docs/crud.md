@@ -14,6 +14,24 @@ Read-only is the default for both database kinds. For discovered files, enabling
 
 Copy the API token when it is created. Tokens are shown once, stored as hashes in the catalog, and survive daemon restarts. **Rotate token** invalidates the previous token; **Revoke API** removes access without deleting the database. Deleting a database's catalog entry also revokes its APIs.
 
+## Send requests inside the UI
+
+![Built-in API request editor and response view with synthetic data](images/api-request-editor.png)
+
+Choose **Test API** after creating an API or beside an entry in **Active APIs**. The built-in request editor replaces the setup panel and starts with that API's URL and, when available, its one-time token.
+
+Select **GET**, **POST**, **PATCH**, or **DELETE**, edit the URL/query parameters, and choose **Send**. POST/PATCH show a JSON body editor. Expand **Edit request headers** to supply a JSON object of string-valued headers.
+
+Authentication defaults to a scoped **API token**. For an existing API, paste its token or rotate it to get a new one. Signed-in administrators can explicitly select **Admin session**; the editor never silently substitutes admin credentials for a missing/invalid scoped token.
+
+The response view shows the real HTTP status, elapsed time, and raw response body, including 4xx/5xx errors. Expand **Response headers** to inspect headers. Bodies are displayed without JSON number coercion, so large integer literals remain exact.
+
+Requests are restricted to this workspace's same-origin `/api/data/` routes. External URLs, management routes, URL credentials, and redirects are blocked. Set Authorization through the authentication controls rather than custom headers. Tokens, request bodies, and responses are not persisted to browser storage.
+
+**Cancel** or closing the editor aborts pending work. Requests time out after 30 seconds; cancellation stops waiting but cannot undo a mutation already applied by the server. POST/PATCH bodies retain the API's 1 MiB limit. Response bodies are capped at 1 MiB with a visible truncation warning; use an external client for larger responses.
+
+## Create an API through REST
+
 The equivalent management request, with admin authentication enabled:
 
 ```bash
