@@ -1,5 +1,3 @@
-const BASE_URL = import.meta.env.DEV ? 'http://localhost:9147' : '';
-
 export interface DBInfo {
   Name: string;
   Path: string;
@@ -227,7 +225,7 @@ function toSchemaTransitionInfo(transition: RawSchemaTransitionInfo): SchemaTran
 }
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
-  const res = await fetch(`${BASE_URL}${path}`, {
+  const res = await fetch(path, {
     ...options,
     headers: { 'Content-Type': 'application/json', ...options?.headers },
   });

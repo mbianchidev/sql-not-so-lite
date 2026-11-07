@@ -4,7 +4,7 @@
 
 ![Schema viewer and column editor in the sql-not-so-lite web interface](docs/images/schema-view.png)
 
-*Browse tables and edit managed database schemas in the embedded web UI.*
+*A dark-by-default SQLite workspace with searchable navigation, schema editing, and local SQL tools. Screenshot uses synthetic data.*
 
 A local SQLite manager for application developers. Run one daemon to manage SQLite files through gRPC or REST, explore data in a browser, and find existing databases across your development directories.
 

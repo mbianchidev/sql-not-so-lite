@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api, type QueryResult, type TableInfo } from '../api/client';
+import { ResultsTable } from './ResultsTable';
+import { Icon } from './Icon';
 
 interface Props {
   dbName: string;
@@ -103,17 +105,17 @@ export function TableBrowser({ dbName, tableName, tableInfo, onDataChange }: Pro
     }
   };
 
-  if (loading && !data) return <div className="loading">Loading table data...</div>;
-  if (!data) return error ? <div className="error-msg">{error}</div> : null;
+  if (loading && !data) return <div className="loading" role="status">Loading table data...</div>;
+  if (!data) return error ? <div className="error-msg" role="alert">{error}<button className="btn-sm" onClick={load}>Retry</button></div> : null;
 
   return (
     <div className="table-browser">
       <div className="table-header">
-        <h3>{tableName}</h3>
+        <div><h3><Icon name="table" />{tableName}</h3><p>{tableInfo?.Columns.length ?? data.Columns.length} fields / {tableInfo?.RowCount.toLocaleString() ?? data.Rows.length} rows</p></div>
         <div className="table-header-actions">
           <button
             type="button"
-            className={`btn-icon add-row-button ${showRowComposer ? 'active' : ''}`}
+            className="btn-primary add-row-button"
             onClick={() => {
               setShowRowComposer((visible) => !visible);
               setError(null);
@@ -124,7 +126,7 @@ export function TableBrowser({ dbName, tableName, tableInfo, onDataChange }: Pro
             aria-expanded={showRowComposer}
             title="Add row"
           >
-            <span className="add-row-button-icon" aria-hidden="true">+</span>
+            <Icon name="plus" />
             <span>Add row</span>
           </button>
           <div className="pagination">
@@ -133,17 +135,17 @@ export function TableBrowser({ dbName, tableName, tableInfo, onDataChange }: Pro
               onClick={() => setOffset(Math.max(0, offset - limit))}
               className="btn-sm"
             >
-              ← Prev
+              <Icon name="chevron-left" /> Prev
             </button>
             <span className="page-info">
-              Rows {offset + 1}–{offset + (data.Rows?.length || 0)}
+              Rows {data.Rows?.length ? offset + 1 : 0}-{offset + (data.Rows?.length || 0)}
             </span>
             <button
               disabled={!data.Rows || data.Rows.length < limit}
               onClick={() => setOffset(offset + limit)}
               className="btn-sm"
             >
-              Next →
+              Next <Icon name="chevron-right" />
             </button>
           </div>
         </div>
@@ -210,41 +212,9 @@ export function TableBrowser({ dbName, tableName, tableInfo, onDataChange }: Pro
         </div>
       )}
 
-      {error && <div className="error-msg">{error}</div>}
-      {success && <div className="scan-result">{success}</div>}
-
-      <div className="table-scroll">
-        <table>
-          <thead>
-            <tr>
-              {data.Columns?.map((col) => (
-                <th key={col.Name}>
-                  {col.Name}
-                  <span className="col-type">{col.Type}</span>
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {data.Rows?.map((row, i) => (
-              <tr key={i}>
-                {row.map((val, j) => (
-                  <td key={j} className={val === 'NULL' ? 'null-val' : ''}>
-                    {val}
-                  </td>
-                ))}
-              </tr>
-            ))}
-            {(!data.Rows || data.Rows.length === 0) && (
-              <tr>
-                <td colSpan={data.Columns?.length || 1} className="empty-row">
-                  No rows
-                </td>
-              </tr>
-            )}
-          </tbody>
-        </table>
-      </div>
+      {error && <div className="error-msg" role="alert">{error}</div>}
+      {success && <div className="scan-result" role="status"><Icon name="check" />{success}</div>}
+      <ResultsTable result={data} rowOffset={offset} />
     </div>
   );
 }

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { api, type DBInfo, type TableInfo, type StatsInfo } from '../api/client';
 
 export function useDatabases() {
@@ -25,45 +25,75 @@ export function useDatabases() {
 }
 
 export function useSchema(dbName: string | null) {
-  const [tables, setTables] = useState<TableInfo[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [schema, setSchema] = useState<{
+    dbName: string | null;
+    tables: TableInfo[];
+    loading: boolean;
+    error: string | null;
+  }>({ dbName: null, tables: [], loading: false, error: null });
+  const generation = useRef(0);
+  const cancelPending = useCallback(() => { generation.current++; }, []);
 
   const refresh = useCallback(async () => {
+    const request = ++generation.current;
     if (!dbName) {
-      setTables([]);
+      setSchema({ dbName: null, tables: [], loading: false, error: null });
       return;
     }
+    setSchema((current) => ({
+      dbName,
+      tables: current.dbName === dbName ? current.tables : [],
+      loading: true,
+      error: null,
+    }));
     try {
-      setLoading(true);
-      setError(null);
-      const schema = await api.getSchema(dbName);
-      setTables(schema || []);
+      const tables = await api.getSchema(dbName);
+      if (request === generation.current) {
+        setSchema({ dbName, tables: tables || [], loading: false, error: null });
+      }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load schema');
-    } finally {
-      setLoading(false);
+      if (request === generation.current) {
+        setSchema({ dbName, tables: [], loading: false, error: err instanceof Error ? err.message : 'Failed to load schema' });
+      }
     }
   }, [dbName]);
 
-  useEffect(() => { refresh(); }, [refresh]);
+  useEffect(() => {
+    void refresh();
+    return cancelPending;
+  }, [refresh, cancelPending]);
 
-  return { tables, loading, error, refresh };
+  return {
+    tables: schema.dbName === dbName ? schema.tables : [],
+    loading: schema.dbName !== dbName || schema.loading,
+    error: schema.dbName === dbName ? schema.error : null,
+    refresh,
+  };
 }
 
 export function useStats() {
   const [stats, setStats] = useState<StatsInfo | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    let active = true;
     const load = async () => {
       try {
-        setStats(await api.getStats());
-      } catch { /* ignore */ }
+        const next = await api.getStats();
+        if (active) {
+          setStats(next);
+          setError(null);
+        }
+      } catch (err) {
+        if (active) {
+          setError(err instanceof Error ? err.message : 'Unable to connect to daemon');
+        }
+      }
     };
-    load();
+    void load();
     const interval = setInterval(load, 5000);
-    return () => clearInterval(interval);
+    return () => { active = false; clearInterval(interval); };
   }, []);
 
-  return stats;
+  return { stats, error };
 }

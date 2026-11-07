@@ -12,5 +12,21 @@ export default defineConfig({
   build: {
     outDir: '../internal/server/static',
     emptyOutDir: true,
+    rolldownOptions: {
+      preserveEntrySignatures: false,
+      output: {
+        strictExecutionOrder: true,
+        codeSplitting: {
+          groups: [{
+            name: 'monaco',
+            test: /[\\/]node_modules[\\/]monaco-editor[\\/]/,
+            includeDependenciesRecursively: false,
+            entriesAware: true,
+            minSize: 30_000,
+            maxSize: 450_000,
+          }],
+        },
+      },
+    },
   },
 })

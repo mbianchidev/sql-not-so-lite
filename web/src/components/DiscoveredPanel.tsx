@@ -1,10 +1,13 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { api, type DiscoveredDB } from '../api/client';
 import { DiscoveredInspector } from './DiscoveredInspector';
+import { Icon } from './Icon';
+import { formatBytes } from '../utils/format';
 
 interface Props {
   selectedId: number | null;
   onSelect: (id: number | null) => void;
+  darkMode: boolean;
 }
 
 const PRIORITY_LABELS: Record<string, string> = {
@@ -16,12 +19,6 @@ const PRIORITY_LABELS: Record<string, string> = {
 };
 
 const DEFAULT_SCAN_PATH = '~/';
-
-function formatSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
 
 function statusClass(status: string, isReplica: boolean, available: boolean): string {
   if (isReplica) return 'replica';
@@ -46,7 +43,7 @@ function statusLabel(status: string, isReplica: boolean, available: boolean): st
   }
 }
 
-export function DiscoveredPanel({ selectedId, onSelect }: Props) {
+export function DiscoveredPanel({ selectedId, onSelect, darkMode }: Props) {
   const [databases, setDatabases] = useState<DiscoveredDB[]>([]);
   const [loading, setLoading] = useState(false);
   const [manualScanning, setManualScanning] = useState(false);
@@ -56,6 +53,7 @@ export function DiscoveredPanel({ selectedId, onSelect }: Props) {
   const [actionLoading, setActionLoading] = useState<number | null>(null);
   const [scanPath, setScanPath] = useState(DEFAULT_SCAN_PATH);
   const [searchQuery, setSearchQuery] = useState('');
+  const [favoritesOnly, setFavoritesOnly] = useState(false);
   const scanWasInProgress = useRef(false);
   const scanning = manualScanning || serverScanning;
 
@@ -168,7 +166,7 @@ export function DiscoveredPanel({ selectedId, onSelect }: Props) {
   };
 
   const handleRestore = async (id: number, name: string) => {
-    if (!confirm(`Restore database "${name}"? This will overwrite the file at its original source path.`)) return;
+    if (!confirm(`Restore the latest snapshot to the local replica of "${name}"? This replaces replica contents, not the original source file.`)) return;
     try {
       setActionLoading(id);
       await api.restoreSnapshot(id);
@@ -196,9 +194,7 @@ export function DiscoveredPanel({ selectedId, onSelect }: Props) {
 
   const filteredDatabases = useMemo(() => {
     const query = searchQuery.trim().toLocaleLowerCase();
-    if (!query) return databases;
-
-    return databases.filter((db) => [
+    return databases.filter((db) => (!favoritesOnly || db.Favorite) && (!query || [
       db.Name,
       db.SourcePath,
       db.GitHubRepo,
@@ -210,185 +206,95 @@ export function DiscoveredPanel({ selectedId, onSelect }: Props) {
       db.IsReplica ? 'replica' : '',
       db.Favorite ? 'favorite' : '',
       db.Available ? '' : 'missing',
-    ].some((value) => value?.toLocaleLowerCase().includes(query)));
-  }, [databases, searchQuery]);
+    ].some((value) => value?.toLocaleLowerCase().includes(query))));
+  }, [databases, searchQuery, favoritesOnly]);
 
   const selected = databases.find((db) => db.ID === selectedId) ?? null;
   const isFiltering = searchQuery.trim().length > 0;
 
   return (
     <div className="discovered-panel">
-      <div className="discovered-header">
-        <h3>Discovered Databases</h3>
-        <div className="discovered-actions">
-          <button className="btn-icon" onClick={refresh} title="Refresh list">⟳</button>
+      <div className="page-heading">
+        <div><h2>Discovery</h2><p>Your SQLite files, right where they belong.</p></div>
+        <button className="btn-sm" onClick={refresh} disabled={loading} aria-label="Refresh discovered databases"><Icon name="refresh" /> Refresh</button>
+      </div>
+
+      <div className="scan-strip">
+        <div className="scan-description"><Icon name="folder" /><div><strong>Find a database</strong><span>Scan a directory without moving your files.</span></div></div>
+        <form className="scan-path-input" onSubmit={(event) => { event.preventDefault(); void handleScan(); }}>
+          <input type="text" value={scanPath} onChange={(event) => setScanPath(event.target.value)} placeholder="/path/to/databases" aria-label="Directory to scan" disabled={scanning} required />
+          <button className="btn-primary" type="submit" disabled={scanning || !scanPath.trim()}><Icon name="search" />{scanning ? 'Scanning...' : 'Scan directory'}</button>
+        </form>
+      </div>
+
+      {error && <div className="error-msg" role="alert">{error}</div>}
+      {scanMessage && <div className="scan-result" role="status"><Icon name="check" />{scanMessage}</div>}
+
+      <div className="catalog-toolbar">
+        <div className="catalog-filters" aria-label="Catalog filters">
+          <button className={!favoritesOnly ? 'active' : ''} onClick={() => setFavoritesOnly(false)} aria-pressed={!favoritesOnly}>All databases <span>{databases.length}</span></button>
+          <button className={favoritesOnly ? 'active' : ''} onClick={() => setFavoritesOnly(true)} aria-pressed={favoritesOnly}><Icon name="star" /> Favorites <span>{databases.filter((database) => database.Favorite).length}</span></button>
         </div>
-      </div>
-
-      <div className="scan-path-input">
-        <input
-          type="text"
-          value={scanPath}
-          onChange={(e) => setScanPath(e.target.value)}
-          onKeyDown={(e) => e.key === 'Enter' && handleScan()}
-          placeholder="Enter path to scan…"
-          disabled={scanning}
-        />
-        <button className="btn-primary" onClick={handleScan} disabled={scanning || !scanPath.trim()}>
-          {scanning ? 'Scanning…' : 'Scan'}
-        </button>
-      </div>
-
-      {error && <div className="error-msg">{error}</div>}
-      {scanMessage && <div className="scan-result">{scanMessage}</div>}
-      {loading && <div className="loading">Loading…</div>}
-
-      {databases.length > 0 && (
         <div className="discovered-search">
-          <span className="discovered-search-icon" aria-hidden="true">⌕</span>
-          <input
-            type="search"
-            value={searchQuery}
-            onChange={(event) => setSearchQuery(event.target.value)}
-            placeholder="Search name, path, repository, status…"
-            aria-label="Search discovered databases"
-          />
-          <span className="discovered-search-count" aria-live="polite">
-            {filteredDatabases.length} / {databases.length}
-          </span>
-          {isFiltering && (
-            <button
-              type="button"
-              className="discovered-search-clear"
-              onClick={() => setSearchQuery('')}
-              aria-label="Clear search"
-            >
-              Clear
-            </button>
-          )}
+          <Icon name="search" />
+          <input type="search" value={searchQuery} onChange={(event) => setSearchQuery(event.target.value)} placeholder="Search files, paths, repositories..." aria-label="Search discovered databases" />
+          {isFiltering && <button className="btn-icon" onClick={() => setSearchQuery('')} aria-label="Clear search"><Icon name="close" /></button>}
         </div>
-      )}
+      </div>
+      <div className="catalog-summary"><span role="status">{filteredDatabases.length} database{filteredDatabases.length === 1 ? '' : 's'}{isFiltering || favoritesOnly ? ` of ${databases.length}` : ''}</span><span><Icon name="lock" /> Source files are read-only</span></div>
+      {loading && databases.length === 0 && <div className="loading" role="status">Loading discovered databases...</div>}
 
-      {selected && (
-        <div className="discovered-detail">
-          <DiscoveredInspector key={selected.ID} database={selected} />
-        </div>
-      )}
-
-      <div className="discovered-list">
+      <div className={`discovery-workspace ${selected ? 'has-selection' : ''}`}>
+      <ul className="discovered-list" aria-label="Discovered databases">
         {filteredDatabases.map((db) => (
-          <div
-            key={db.ID}
-            className={`discovered-item ${selectedId === db.ID ? 'active' : ''} ${db.Available ? '' : 'missing'}`}
-            onClick={() => onSelect(selectedId === db.ID ? null : db.ID)}
-          >
-            <div className="discovered-item-header">
-              <span className={`status-indicator ${statusClass(db.Status, db.IsReplica, db.Available)}`} />
-              <span className="discovered-name">{db.Name}</span>
-              <button
-                type="button"
-                className={`favorite-toggle ${db.Favorite ? 'active' : ''}`}
-                onClick={(event) => {
-                  event.stopPropagation();
-                  void handleFavorite(db.ID, !db.Favorite);
-                }}
-                disabled={actionLoading === db.ID}
-                aria-label={db.Favorite ? `Remove ${db.Name} from favorites` : `Add ${db.Name} to favorites`}
-                title={db.Favorite ? 'Remove from favorites' : 'Add to favorites'}
-              >
-                {db.Favorite ? '★' : '☆'}
+          <li key={db.ID} className={`discovered-item ${selectedId === db.ID ? 'active' : ''} ${db.Available ? '' : 'missing'}`}>
+            <div className="discovered-item-main">
+              <button className="discovered-select" onClick={() => onSelect(selectedId === db.ID ? null : db.ID)} aria-label={`Inspect ${db.Name}`} aria-expanded={selectedId === db.ID} aria-controls={selectedId === db.ID ? 'discovered-inspector' : undefined}>
+                <span className="file-icon"><Icon name="database" /></span>
+                <span className="discovered-file"><strong>{db.Name}</strong><span className="discovered-path" title={db.SourcePath}>{db.SourcePath}</span></span>
+                <Icon name="chevron-right" />
               </button>
-              <span className={`discovered-status-label ${db.IsReplica ? 'replica' : ''}`}>
-                {statusLabel(db.Status, db.IsReplica, db.Available)}
-              </span>
-              <span className={`priority-badge priority-${db.Priority}`}>
-                {PRIORITY_LABELS[db.Priority] ?? db.Priority}
-              </span>
+              <button type="button" className={`favorite-toggle btn-icon ${db.Favorite ? 'active' : ''}`} onClick={() => void handleFavorite(db.ID, !db.Favorite)} disabled={actionLoading === db.ID} aria-label={db.Favorite ? `Remove ${db.Name} from favorites` : `Add ${db.Name} to favorites`} title={db.Favorite ? 'Remove from favorites' : 'Add to favorites'}><Icon name="star" filled={db.Favorite} /></button>
             </div>
-
-            <div className="discovered-item-meta">
-              <span className="discovered-path" title={db.SourcePath}>{db.SourcePath}</span>
-            </div>
-
-            {db.Status === 'error' && db.ErrorMessage && (
-              <div className="discovered-error-detail">⚠ {db.ErrorMessage}</div>
-            )}
-
             <div className="discovered-item-details">
-              <span>{formatSize(db.SizeBytes)}</span>
+              <span>{formatBytes(db.SizeBytes)}</span>
               <span>SQLite {db.SQLiteVersion}</span>
-              <span>{db.JournalMode}</span>
-              {db.GitHubRepo && (
-                <a
-                  className="github-link"
-                  href={db.GitHubURL}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  onClick={(e) => e.stopPropagation()}
-                  title={`Open ${db.GitHubRepo} on GitHub`}
-                >
-                  <svg className="github-icon" viewBox="0 0 16 16" width="14" height="14" fill="currentColor">
-                    <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z" />
-                  </svg>
-                  {db.GitHubRepo}
-                </a>
-              )}
+              <span className="journal-label">{db.JournalMode || 'Unknown journal'}</span>
+              <span className="priority-badge">{PRIORITY_LABELS[db.Priority] ?? db.Priority}</span>
+              {db.GitHubRepo && db.GitHubURL && <a className="github-link" href={db.GitHubURL} target="_blank" rel="noopener noreferrer">{db.GitHubRepo}<Icon name="arrow-up-right" /></a>}
             </div>
-
+            {db.Status === 'error' && db.ErrorMessage && <div className="discovered-error-detail" role="alert">{db.ErrorMessage}</div>}
+            <div className="discovered-item-bottom">
+              <span className={`discovered-status-label ${statusClass(db.Status, db.IsReplica, db.Available)}`}><span className={`status-indicator ${statusClass(db.Status, db.IsReplica, db.Available)}`} />{statusLabel(db.Status, db.IsReplica, db.Available)}</span>
             <div className="discovered-item-actions">
               {db.Available && !db.IsReplica && (db.Status === 'discovered' || db.Status === 'paused' || db.Status === 'error') && (
-                <button
-                  className="btn-sm"
-                  onClick={(e) => { e.stopPropagation(); handleReplicate(db.ID); }}
-                  disabled={actionLoading === db.ID}
-                >
-                  {db.Status === 'paused' ? '▶ Resume' : db.Status === 'error' ? '↻ Retry' : '▶ Replicate'}
-                </button>
+                <button className="btn-sm" onClick={() => void handleReplicate(db.ID)} disabled={actionLoading === db.ID} aria-label={db.Status === 'paused' ? `Resume replication of ${db.Name}` : `Replicate ${db.Name}`}><Icon name={db.Status === 'error' ? 'refresh' : 'play'} />{db.Status === 'paused' ? 'Resume' : db.Status === 'error' ? 'Retry' : 'Replicate'}</button>
               )}
               {db.Status === 'replicating' && (
-                <button
-                  className="btn-sm"
-                  onClick={(e) => { e.stopPropagation(); handleStop(db.ID); }}
-                  disabled={actionLoading === db.ID}
-                >
-                  ⏸ Stop
-                </button>
+                <button className="btn-sm" onClick={() => void handleStop(db.ID)} disabled={actionLoading === db.ID} aria-label={`Stop replication of ${db.Name}`}><Icon name="pause" /> Stop</button>
               )}
               {db.Available && (db.Status === 'replicating' || db.Status === 'paused') && (
-                <button
-                  className="btn-sm"
-                  onClick={(e) => { e.stopPropagation(); handleRestore(db.ID, db.Name); }}
-                  disabled={actionLoading === db.ID}
-                >
-                  ↻ Restore
-                </button>
+                <button className="btn-sm" onClick={() => void handleRestore(db.ID, db.Name)} disabled={actionLoading === db.ID} aria-label={`Restore ${db.Name}`}><Icon name="history" /> Restore</button>
               )}
-              <button
-                className="btn-danger-sm"
-                onClick={(e) => { e.stopPropagation(); handleRemove(db.ID, db.Name); }}
-                disabled={actionLoading === db.ID}
-                title="Remove from catalog"
-              >
-                ✕
-              </button>
+              <button className="btn-danger-sm" onClick={() => void handleRemove(db.ID, db.Name)} disabled={actionLoading === db.ID} aria-label={`Remove ${db.Name} from catalog`} title="Remove from catalog"><Icon name="close" /></button>
             </div>
-          </div>
+            </div>
+          </li>
         ))}
-        {!loading && databases.length === 0 && !scanMessage && (
-          <div className="discovered-empty">
-            No databases discovered yet. Click <strong>Scan</strong> to search.
-          </div>
+        {!loading && databases.length === 0 && (
+          <li className="empty-state"><Icon name="search" /><h3>Find your first database</h3><p>Enter a directory above and scan for SQLite files. Your originals stay untouched.</p></li>
         )}
         {!loading && databases.length > 0 && filteredDatabases.length === 0 && (
-          <div className="discovered-empty">
-            No databases match <strong>“{searchQuery.trim()}”</strong>.
-            <button type="button" className="discovered-empty-clear" onClick={() => setSearchQuery('')}>
-              Clear search
-            </button>
-          </div>
+          <li className="empty-state"><Icon name={favoritesOnly ? 'star' : 'search'} /><h3>{favoritesOnly && !isFiltering ? 'No favorites yet' : 'No matching databases'}</h3><p>{favoritesOnly && !isFiltering ? 'Star a database to keep it close at hand.' : `No databases match "${searchQuery.trim()}". Try a different name or path.`}</p><button className="btn-sm" onClick={() => { setSearchQuery(''); setFavoritesOnly(false); }}>Show all databases</button></li>
         )}
+      </ul>
+      {selected && (
+        <div className="discovered-detail" id="discovered-inspector">
+          <button className="inspector-back btn-sm" onClick={() => onSelect(null)} aria-label="Close inspector"><Icon name="chevron-left" /> Back to databases</button>
+          <DiscoveredInspector key={selected.ID} database={selected} darkMode={darkMode} />
+        </div>
+      )}
       </div>
-
     </div>
   );
 }

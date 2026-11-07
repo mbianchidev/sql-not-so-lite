@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { api, type ColumnDefinition, type ColumnInfo, type TableInfo } from '../api/client';
+import { Icon } from './Icon';
 
 interface Props {
   dbName: string;
@@ -7,6 +8,7 @@ interface Props {
   selectedTable: string | null;
   onSelectTable: (name: string) => void;
   onSchemaChange: () => Promise<void>;
+  startCreating?: boolean;
 }
 
 const columnTypes = ['INTEGER', 'TEXT', 'REAL', 'NUMERIC', 'BOOLEAN', 'DATE', 'DATETIME', 'BLOB'];
@@ -37,7 +39,7 @@ function editableDefault(value: string): string | undefined {
   return value;
 }
 
-export function SchemaViewer({ dbName, tables, selectedTable, onSelectTable, onSchemaChange }: Props) {
+export function SchemaViewer({ dbName, tables, selectedTable, onSelectTable, onSchemaChange, startCreating = false }: Props) {
   const selected = tables.find((t) => t.Name === selectedTable);
   const [newTableName, setNewTableName] = useState('');
   const [tableColumns, setTableColumns] = useState<DraftColumn[]>([createDraftColumn()]);
@@ -46,6 +48,7 @@ export function SchemaViewer({ dbName, tables, selectedTable, onSelectTable, onS
   const [error, setError] = useState<string | null>(null);
   const [editingColumn, setEditingColumn] = useState<string | null>(null);
   const [columnEdit, setColumnEdit] = useState<ColumnDefinition>(emptyColumn);
+  const [showCreateTable, setShowCreateTable] = useState(startCreating);
 
   const save = async (action: () => Promise<unknown>, afterSave: () => void) => {
     setSaving(true);
@@ -81,6 +84,7 @@ export function SchemaViewer({ dbName, tables, selectedTable, onSelectTable, onS
       () => {
         setNewTableName('');
         setTableColumns([createDraftColumn()]);
+        setShowCreateTable(false);
         onSelectTable(tableName);
       },
     );
@@ -150,7 +154,8 @@ export function SchemaViewer({ dbName, tables, selectedTable, onSelectTable, onS
   return (
     <div className="schema-viewer">
       <div className="schema-tables">
-        <h3>Tables</h3>
+        <div className="section-heading"><h3>Tables <span className="row-count">{tables.length}</span></h3><button className="btn-sm" onClick={() => setShowCreateTable((current) => !current)} aria-label="New table" aria-expanded={showCreateTable || tables.length === 0}><Icon name="plus" /> New table</button></div>
+        {(showCreateTable || tables.length === 0) && (
         <div className="schema-form create-table-form">
           <div className="schema-form-heading">
             <div>
@@ -177,7 +182,7 @@ export function SchemaViewer({ dbName, tables, selectedTable, onSelectTable, onS
                     aria-label={`Move field ${index + 1} up`}
                     title="Move field up"
                   >
-                    ↑
+                    <Icon name="arrow-up" />
                   </button>
                   <button
                     type="button"
@@ -187,7 +192,7 @@ export function SchemaViewer({ dbName, tables, selectedTable, onSelectTable, onS
                     aria-label={`Move field ${index + 1} down`}
                     title="Move field down"
                   >
-                    ↓
+                    <Icon name="arrow-down" />
                   </button>
                 </div>
                 <span className="create-table-column-number" aria-hidden="true">{index + 1}</span>
@@ -195,6 +200,7 @@ export function SchemaViewer({ dbName, tables, selectedTable, onSelectTable, onS
                   value={column.definition}
                   onChange={(value) => updateTableColumn(index, value)}
                   allowPrimaryKey
+                  labelPrefix={`Field ${index + 1}`}
                   disabled={saving}
                 />
                 <button
@@ -205,7 +211,7 @@ export function SchemaViewer({ dbName, tables, selectedTable, onSelectTable, onS
                   aria-label={`Remove field ${index + 1}`}
                   title="Remove field"
                 >
-                  ✕
+                  <Icon name="close" />
                 </button>
               </div>
             ))}
@@ -217,7 +223,7 @@ export function SchemaViewer({ dbName, tables, selectedTable, onSelectTable, onS
               onClick={() => setTableColumns((current) => [...current, createDraftColumn()])}
               disabled={saving}
             >
-              + Add field
+              <Icon name="plus" /> Add field
             </button>
             <button
               className="btn-primary"
@@ -232,17 +238,15 @@ export function SchemaViewer({ dbName, tables, selectedTable, onSelectTable, onS
             </button>
           </div>
         </div>
-        {error && <div className="error-msg">{error}</div>}
+        )}
+        {error && <div className="error-msg" role="alert">{error}</div>}
         <ul className="table-list">
           {tables.map((t) => (
             <li
               key={t.Name}
               className={`table-item ${selectedTable === t.Name ? 'active' : ''}`}
-              onClick={() => onSelectTable(t.Name)}
             >
-              <span className="table-icon">⊞</span>
-              <span className="table-name">{t.Name}</span>
-              <span className="row-count">{t.RowCount} rows</span>
+              <button onClick={() => onSelectTable(t.Name)} aria-current={selectedTable === t.Name ? 'true' : undefined}><Icon name="table" /><span className="table-name">{t.Name}</span><span className="row-count">{t.RowCount} rows</span></button>
             </li>
           ))}
           {tables.length === 0 && (
@@ -258,7 +262,7 @@ export function SchemaViewer({ dbName, tables, selectedTable, onSelectTable, onS
           <div className="schema-section">
             <h4>Columns</h4>
             <div className="schema-form schema-form-inline">
-              <ColumnForm value={newColumn} onChange={setNewColumn} disabled={saving} />
+              <ColumnForm value={newColumn} onChange={setNewColumn} disabled={saving} labelPrefix="New field" />
               <button
                 className="btn-sm"
                 onClick={handleAddColumn}
@@ -288,6 +292,7 @@ export function SchemaViewer({ dbName, tables, selectedTable, onSelectTable, onS
                           onChange={setColumnEdit}
                           disabled={saving}
                           lockType={col.PrimaryKey}
+                          labelPrefix={`Edit ${col.Name}`}
                         />
                         <div className="schema-column-editor-actions">
                           <button type="button" className="btn-primary" onClick={handleEditColumn} disabled={saving}>
@@ -309,9 +314,9 @@ export function SchemaViewer({ dbName, tables, selectedTable, onSelectTable, onS
                   <tr key={col.Name}>
                     <td className="col-name">{col.Name}</td>
                     <td className="col-type-badge">{col.Type}</td>
-                    <td>{col.Nullable ? '✓' : '✕'}</td>
-                    <td className="col-default">{col.DefaultValue || '—'}</td>
-                    <td>{col.PrimaryKey ? '🔑' : ''}</td>
+                    <td>{col.Nullable ? 'Yes' : 'No'}</td>
+                    <td className="col-default">{col.DefaultValue || 'None'}</td>
+                    <td>{col.PrimaryKey && <><Icon name="key" /><span className="sr-only">Primary key</span></>}</td>
                     <td>
                       <button
                         type="button"
@@ -345,7 +350,7 @@ export function SchemaViewer({ dbName, tables, selectedTable, onSelectTable, onS
                     <tr key={idx.Name}>
                       <td>{idx.Name}</td>
                       <td>{idx.Columns?.join(', ')}</td>
-                      <td>{idx.Unique ? '✓' : ''}</td>
+                      <td>{idx.Unique ? 'Yes' : 'No'}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -364,6 +369,7 @@ interface ColumnFormProps {
   allowPrimaryKey?: boolean;
   lockType?: boolean;
   disabled: boolean;
+  labelPrefix?: string;
 }
 
 function ColumnForm({
@@ -372,6 +378,7 @@ function ColumnForm({
   allowPrimaryKey = false,
   lockType = false,
   disabled,
+  labelPrefix = 'Field',
 }: ColumnFormProps) {
   const set = (changes: Partial<ColumnDefinition>) => onChange({ ...value, ...changes });
 
@@ -381,12 +388,14 @@ function ColumnForm({
         value={value.Name}
         onChange={(event) => set({ Name: event.target.value })}
         placeholder="Field name"
+        aria-label={`${labelPrefix} name`}
         disabled={disabled}
       />
       <select
         value={value.Type}
         onChange={(event) => set({ Type: event.target.value })}
         disabled={disabled || lockType}
+        aria-label={`${labelPrefix} type`}
       >
         {columnTypes.map((type) => <option key={type}>{type}</option>)}
       </select>
@@ -394,6 +403,7 @@ function ColumnForm({
         value={value.DefaultValue ?? ''}
         onChange={(event) => set({ DefaultValue: event.target.value === '' ? undefined : event.target.value })}
         placeholder="Default (optional)"
+        aria-label={`${labelPrefix} default`}
         disabled={disabled}
       />
       <label>

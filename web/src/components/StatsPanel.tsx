@@ -1,4 +1,5 @@
 import type { StatsInfo } from '../api/client';
+import { formatBytes, formatUptime } from '../utils/format';
 
 interface Props {
   stats: StatsInfo | null;
@@ -6,20 +7,6 @@ interface Props {
 
 export function StatsPanel({ stats }: Props) {
   if (!stats) return null;
-
-  const formatUptime = (seconds: number): string => {
-    if (seconds < 60) return `${seconds}s`;
-    if (seconds < 3600) return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
-    const h = Math.floor(seconds / 3600);
-    const m = Math.floor((seconds % 3600) / 60);
-    return `${h}h ${m}m`;
-  };
-
-  const formatBytes = (bytes: number): string => {
-    if (bytes < 1024) return `${bytes} B`;
-    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-  };
 
   return (
     <div className="stats-panel">

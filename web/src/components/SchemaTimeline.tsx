@@ -1,5 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { api, type SchemaVersionInfo, type SchemaTransitionInfo, type SnapshotInfo } from '../api/client';
+import { Icon } from './Icon';
+import { formatBytes } from '../utils/format';
 
 interface Props {
   dbId: number;
@@ -12,12 +14,6 @@ function formatDate(iso: string): string {
   } catch {
     return iso;
   }
-}
-
-function formatSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 export function SchemaTimeline({ dbId, dbName }: Props) {
@@ -51,6 +47,7 @@ export function SchemaTimeline({ dbId, dbName }: Props) {
   useEffect(() => { refresh(); }, [refresh]);
 
   const handleRestore = async (snapshotVersion: number) => {
+    if (!confirm(`Restore snapshot ${snapshotVersion} to the local replica of "${dbName}"? This replaces replica contents, not the original source file.`)) return;
     try {
       setRestoring(snapshotVersion);
       await api.restoreSnapshot(dbId, snapshotVersion);
@@ -68,14 +65,14 @@ export function SchemaTimeline({ dbId, dbName }: Props) {
   const getSnapshotsForVersion = (schemaVersion: number): SnapshotInfo[] =>
     snapshots.filter((s) => s.SchemaVersion === schemaVersion);
 
-  if (loading) return <div className="loading">Loading schema history…</div>;
-  if (error) return <div className="error-msg">{error}</div>;
+  if (loading) return <div className="loading" role="status">Loading schema history...</div>;
+  if (error) return <div className="error-msg" role="alert">{error}</div>;
 
   return (
     <div className="schema-timeline">
       <div className="timeline-header">
-        <h4>Schema History — {dbName}</h4>
-        <button className="btn-icon" onClick={refresh} title="Refresh">⟳</button>
+        <h4>Schema history</h4>
+        <button className="btn-icon" onClick={refresh} aria-label="Refresh schema history" title="Refresh"><Icon name="refresh" /></button>
       </div>
 
       {versions.length === 0 ? (
@@ -101,15 +98,15 @@ export function SchemaTimeline({ dbId, dbName }: Props) {
 
                 <div
                   className={`version-card ${isExpanded ? 'expanded' : ''}`}
-                  onClick={() => setExpandedVersion(isExpanded ? null : ver.Version)}
                 >
-                  <div className="version-card-header">
+                  <button className="version-card-header" onClick={() => setExpandedVersion(isExpanded ? null : ver.Version)} aria-expanded={isExpanded} aria-label={`Schema version ${ver.Version}, ${formatDate(ver.DetectedAt)}`}>
                     <span className="version-badge">v{ver.Version}</span>
                     <span className="version-hash" title={ver.SchemaHash}>
                       {ver.SchemaHash.slice(0, 12)}
                     </span>
                     <span className="version-date">{formatDate(ver.DetectedAt)}</span>
-                  </div>
+                    <Icon name={isExpanded ? 'chevron-down' : 'chevron-right'} />
+                  </button>
 
                   {isExpanded && (
                     <div className="version-card-body">
@@ -123,7 +120,7 @@ export function SchemaTimeline({ dbId, dbName }: Props) {
                       {versionSnapshots.map((snap) => (
                         <div key={snap.ID} className="snapshot-item">
                           <span className="snapshot-version">#{snap.Version}</span>
-                          <span className="snapshot-size">{formatSize(snap.SizeBytes)}</span>
+                          <span className="snapshot-size">{formatBytes(snap.SizeBytes)}</span>
                           <span className="snapshot-trigger">{snap.Trigger}</span>
                           <span className="snapshot-date">{formatDate(snap.CreatedAt)}</span>
                           <button
@@ -131,7 +128,7 @@ export function SchemaTimeline({ dbId, dbName }: Props) {
                             onClick={(e) => { e.stopPropagation(); handleRestore(snap.Version); }}
                             disabled={restoring === snap.Version}
                           >
-                            {restoring === snap.Version ? '…' : '↻ Restore'}
+                            <Icon name="history" />{restoring === snap.Version ? 'Restoring...' : 'Restore'}
                           </button>
                         </div>
                       ))}

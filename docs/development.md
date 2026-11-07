@@ -15,6 +15,8 @@ mkdir -p "$HOME/sqnsl-scan"
 
 The GUI build hook uses `npm ci` against `web/package-lock.json`; the production output goes directly to `internal/server/static` for `go:embed`. The frontend postinstall hook adapts the lint tooling to its supported TypeScript runtime.
 
+Monaco's SQL editor, grammar, and worker are bundled locally and loaded when needed. No editor CDN is required. The `minimatch` override keeps the lint dependency tree on a patched release; run lint after changing that override.
+
 ## Hot reload
 
 Run the backend in one terminal:
@@ -43,6 +45,9 @@ make test
 npm --prefix web run lint
 make all
 
+# Mocked browser workflows, including desktop/mobile navigation and local SQL editing
+(cd web && npx playwright install chromium && npm run build && npm run test:e2e)
+
 # Release automation with mocked GitHub and disposable repositories
 make test-release
 ```
@@ -50,6 +55,8 @@ make test-release
 Release tests use synthetic tokens and real pseudo-terminals; they additionally need **Python 3.9+** with its standard-library `pty` module on macOS or Linux. Publishing a release does not require Python.
 
 Use focused Go package tests while iterating, and run the relevant build before submitting changes. There is no repository-wide format command: Go changes should use `gofmt`, while frontend changes follow the existing TypeScript/ESLint conventions.
+
+Browser tests serve the production build on port 4178, intercept every API request with synthetic fixtures, and block Monaco's former CDN. Build first; the tests do not use the running daemon or application databases. Linux may need `npx playwright install --with-deps chromium` to install browser system libraries. CI runs these workflows in the web job and retains failure traces for three days.
 
 ## Protobuf changes
 

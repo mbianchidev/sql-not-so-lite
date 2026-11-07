@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import Editor from '@monaco-editor/react';
 import {
   api,
   type DiscoveredDB,
@@ -8,16 +7,20 @@ import {
 } from '../api/client';
 import { ResultsTable } from './ResultsTable';
 import { SchemaTimeline } from './SchemaTimeline';
+import { CodeEditor } from './CodeEditor';
+import { TabBar } from './TabBar';
+import { Icon } from './Icon';
 
 interface Props {
   database: DiscoveredDB;
+  darkMode: boolean;
 }
 
 type InspectorTab = 'browse' | 'query' | 'history';
 
 const PAGE_SIZE = 100;
 
-export function DiscoveredInspector({ database }: Props) {
+export function DiscoveredInspector({ database, darkMode }: Props) {
   const [activeTab, setActiveTab] = useState<InspectorTab>('browse');
   const [tables, setTables] = useState<TableInfo[]>([]);
   const [selectedTable, setSelectedTable] = useState<string | null>(null);
@@ -31,6 +34,7 @@ export function DiscoveredInspector({ database }: Props) {
   const [queryError, setQueryError] = useState<string | null>(null);
   const [runningQuery, setRunningQuery] = useState(false);
   const sqlRef = useRef(sql);
+  const running = useRef(false);
 
   const selected = useMemo(
     () => tables.find((table) => table.Name === selectedTable) ?? null,
@@ -98,7 +102,8 @@ export function DiscoveredInspector({ database }: Props) {
 
   const runQuery = async () => {
     const statement = sqlRef.current.trim();
-    if (!statement) return;
+    if (!statement || running.current) return;
+    running.current = true;
     setRunningQuery(true);
     setQueryError(null);
     setQueryResult(null);
@@ -107,6 +112,7 @@ export function DiscoveredInspector({ database }: Props) {
     } catch (err) {
       setQueryError(err instanceof Error ? err.message : 'Query failed');
     } finally {
+      running.current = false;
       setRunningQuery(false);
     }
   };
@@ -114,44 +120,23 @@ export function DiscoveredInspector({ database }: Props) {
   return (
     <section className="discovered-inspector" aria-label={`Inspect ${database.Name}`}>
       <div className="inspector-header">
-        <div>
-          <span className="inspector-kicker">Read-only inspector</span>
-          <h3>{database.Name}</h3>
-        </div>
-        <span className="read-only-badge">No writes</span>
+        <div><h3>{database.Name}</h3><p>No writes to the source file</p></div>
+        <span className="read-only-badge"><Icon name="lock" /> Read-only inspector</span>
       </div>
 
-      <div className="inspector-tabs" role="tablist" aria-label="Database inspector">
-        <button
-          type="button"
-          className={activeTab === 'browse' ? 'active' : ''}
-          onClick={() => setActiveTab('browse')}
-        >
-          Schema &amp; data
-        </button>
-        <button
-          type="button"
-          className={activeTab === 'query' ? 'active' : ''}
-          onClick={() => setActiveTab('query')}
-          disabled={!database.Available}
-        >
-          SELECT query
-        </button>
-        <button
-          type="button"
-          className={activeTab === 'history' ? 'active' : ''}
-          onClick={() => setActiveTab('history')}
-        >
-          History
-        </button>
-      </div>
+      <TabBar<InspectorTab> id={`inspector-${database.ID}`} label="Database inspector" active={activeTab} onChange={setActiveTab} tabs={[
+        { value: 'browse', label: 'Schema & data', icon: 'table' },
+        { value: 'query', label: 'SELECT query', icon: 'terminal', disabled: !database.Available },
+        { value: 'history', label: 'History', icon: 'history' },
+      ]} />
 
+      <div className="inspector-content" role="tabpanel" id={`inspector-${database.ID}-panel`} aria-labelledby={`inspector-${database.ID}-tab-${activeTab}`} tabIndex={0}>
       {!database.Available && activeTab !== 'history' && (
         <div className="inspector-unavailable">
           The source file is unavailable. Restore it to inspect its current contents.
         </div>
       )}
-      {error && <div className="error-msg">{error}</div>}
+      {error && <div className="error-msg" role="alert">{error}</div>}
 
       {activeTab === 'browse' && database.Available && (
         <div className="inspector-browser">
@@ -160,7 +145,7 @@ export function DiscoveredInspector({ database }: Props) {
               <span>Tables</span>
               <span>{tables.length}</span>
             </div>
-            {loadingSchema && <div className="loading">Reading schema…</div>}
+            {loadingSchema && <div className="loading" role="status">Reading schema...</div>}
             {!loadingSchema && tables.map((table) => (
               <button
                 type="button"
@@ -168,7 +153,7 @@ export function DiscoveredInspector({ database }: Props) {
                 className={selectedTable === table.Name ? 'active' : ''}
                 onClick={() => selectTable(table.Name)}
               >
-                <span>{table.Name}</span>
+                <Icon name="table" /><span>{table.Name}</span>
                 <small>{table.RowCount} rows</small>
               </button>
             ))}
@@ -182,7 +167,6 @@ export function DiscoveredInspector({ database }: Props) {
               <>
                 <div className="inspector-table-title">
                   <div>
-                    <span className="inspector-kicker">Table</span>
                     <h4>{selected.Name}</h4>
                   </div>
                   <span>{selected.Columns?.length ?? 0} fields</span>
@@ -218,8 +202,7 @@ export function DiscoveredInspector({ database }: Props) {
 
                 <div className="inspector-data-heading">
                   <div>
-                    <span className="inspector-kicker">Live data</span>
-                    <strong>Rows {offset + 1}–{offset + (tableData?.Rows?.length ?? 0)}</strong>
+                    <strong>Rows {tableData?.Rows?.length ? offset + 1 : 0}-{offset + (tableData?.Rows?.length ?? 0)}</strong>
                   </div>
                   <div className="pagination">
                     <button
@@ -228,7 +211,7 @@ export function DiscoveredInspector({ database }: Props) {
                       disabled={offset === 0 || loadingTable}
                       onClick={() => setOffset(Math.max(0, offset - PAGE_SIZE))}
                     >
-                      ← Prev
+                      <Icon name="chevron-left" /> Prev
                     </button>
                     <button
                       type="button"
@@ -236,12 +219,12 @@ export function DiscoveredInspector({ database }: Props) {
                       disabled={loadingTable || (tableData?.Rows?.length ?? 0) < PAGE_SIZE}
                       onClick={() => setOffset(offset + PAGE_SIZE)}
                     >
-                      Next →
+                      Next <Icon name="chevron-right" />
                     </button>
                   </div>
                 </div>
-                {loadingTable ? <div className="loading">Reading rows…</div> : tableData && (
-                  <ResultsTable result={tableData} />
+                {loadingTable ? <div className="loading" role="status">Reading rows...</div> : tableData && (
+                  <ResultsTable result={tableData} rowOffset={offset} />
                 )}
               </>
             ) : !loadingSchema && (
@@ -256,36 +239,14 @@ export function DiscoveredInspector({ database }: Props) {
           <div className="inspector-query-note">
             Only one SELECT statement can run at a time. Results are capped at 1,000 rows.
           </div>
-          <div className="editor-container">
-            <Editor
-              height="190px"
-              defaultLanguage="sql"
-              value={sql}
-              onChange={(value) => {
-                sqlRef.current = value ?? '';
-                setSql(sqlRef.current);
-              }}
-              theme="vs-dark"
-              options={{
-                minimap: { enabled: false },
-                fontSize: 13,
-                lineNumbers: 'on',
-                scrollBeyondLastLine: false,
-                wordWrap: 'on',
-                automaticLayout: true,
-              }}
-              onMount={(editor) => {
-                editor.addCommand(2048 | 3, () => void runQuery());
-              }}
-            />
-          </div>
+          <CodeEditor height="220px" value={sql} onChange={(value) => { sqlRef.current = value; setSql(value); }} onExecute={() => void runQuery()} darkMode={darkMode} />
           <div className="inspector-query-actions">
             <span>Ctrl/Cmd + Enter</span>
             <button type="button" className="btn-primary" onClick={runQuery} disabled={runningQuery || !sql.trim()}>
-              {runningQuery ? 'Running…' : 'Run SELECT'}
+              <Icon name="play" />{runningQuery ? 'Running...' : 'Run SELECT'}
             </button>
           </div>
-          {queryError && <div className="error-msg">{queryError}</div>}
+          {queryError && <div className="error-msg" role="alert">{queryError}</div>}
           {queryResult && <ResultsTable result={queryResult} />}
         </div>
       )}
@@ -293,6 +254,7 @@ export function DiscoveredInspector({ database }: Props) {
       {activeTab === 'history' && (
         <SchemaTimeline dbId={database.ID} dbName={database.Name} />
       )}
+      </div>
     </section>
   );
 }
