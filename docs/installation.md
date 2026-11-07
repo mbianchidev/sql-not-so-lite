@@ -34,6 +34,19 @@ sudo dnf install "./sql-not-so-lite_${VERSION}_linux_amd64.rpm"  # Fedora/RHEL
 
 Use the command for your distribution and replace `amd64` with `arm64` on ARM machines. Run the daemon as your normal user, not with `sudo`.
 
+RPM packages are currently unsigned. If RPM rejects a trusted release package
+with `no signature`, download `checksums.txt` from that same release and verify
+the package before using a per-command signature exception:
+
+```bash
+PACKAGE="sql-not-so-lite_${VERSION}_linux_amd64.rpm"
+grep "  $PACKAGE$" checksums.txt | sha256sum -c -
+sudo rpm --install --nosignature "./$PACKAGE"
+```
+
+RPM's digest checks remain enabled. Do not disable signature verification
+system-wide or use this exception for packages from an untrusted source.
+
 ## Build from source
 
 To build the current default branch rather than install a release:
