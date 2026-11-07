@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"log"
@@ -15,6 +16,7 @@ import (
 	"github.com/mbianchidev/sql-not-so-lite/internal/catalog"
 	"github.com/mbianchidev/sql-not-so-lite/internal/config"
 	"github.com/mbianchidev/sql-not-so-lite/internal/daemon"
+	"github.com/mbianchidev/sql-not-so-lite/internal/etcqlite"
 	"github.com/mbianchidev/sql-not-so-lite/internal/replicator"
 	"github.com/mbianchidev/sql-not-so-lite/internal/scanner"
 	"github.com/mbianchidev/sql-not-so-lite/internal/schema"
@@ -212,6 +214,10 @@ var configCmd = &cobra.Command{
 		fmt.Printf("\n[logging]\n")
 		fmt.Printf("  level = %q\n", cfg.Log.Level)
 		fmt.Printf("  file  = %q\n", cfg.Log.File)
+		fmt.Printf("\n[etcqlite]\n")
+		fmt.Printf("  enabled = %t\n", cfg.Etcqlite.Enabled)
+		fmt.Printf("  endpoint = %q\n", cfg.Etcqlite.Endpoint)
+		fmt.Printf("  upstream_authentication_configured = %t\n", cfg.Etcqlite.AuthToken != "" || cfg.Etcqlite.AuthTokenFile != "" || cfg.Etcqlite.TLSCertFile != "")
 		return nil
 	},
 }
@@ -417,6 +423,12 @@ var replicateCmd = &cobra.Command{
 		if err != nil {
 			return fmt.Errorf("database %q not found: %w", name, err)
 		}
+		if db.Inspection != nil {
+			return etcqlite.ErrProtected
+		}
+		if err := etcqlite.CheckOrdinaryFile(context.Background(), db.SourcePath); err != nil {
+			return err
+		}
 		if replicator.IsManagedReplica(db.SourcePath, cfg.Replicator.ReplicaDir) {
 			return fmt.Errorf("database %q is a managed replica and cannot be replicated", name)
 		}
@@ -568,7 +580,9 @@ var replicateStopCmd = &cobra.Command{
 		if err != nil {
 			return fmt.Errorf("database %q not found: %w", name, err)
 		}
-
+		if db.Inspection != nil {
+			return etcqlite.ErrProtected
+		}
 		if err := cat.UpdateStatus(db.ID, "paused", ""); err != nil {
 			return fmt.Errorf("failed to update status: %w", err)
 		}
@@ -600,7 +614,9 @@ var restoreCmd = &cobra.Command{
 		if err != nil {
 			return fmt.Errorf("database %q not found: %w", name, err)
 		}
-
+		if db.Inspection != nil {
+			return etcqlite.ErrProtected
+		}
 		snapshots, err := cat.ListSnapshots(db.ID)
 		if err != nil || len(snapshots) == 0 {
 			return fmt.Errorf("no snapshots available for %q", name)

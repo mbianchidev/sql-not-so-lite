@@ -7,12 +7,14 @@
 | Guide | Start here for |
 |-------|----------------|
 | [Installation](installation.md) | Releases and source builds, supported platforms, user services, Docker, and troubleshooting |
-| [Usage](usage.md) | GUI workflows, CLI commands, discovery, local replication, and safe snapshot recovery |
+| [Usage](usage.md) | GUI workflows, CLI commands, discovery, optional Etcqlite inspection, local replication, and safe snapshot recovery |
 | [Configuration](configuration.md) | TOML settings, defaults, storage paths, environment overrides, and inactive settings |
 | [APIs](api.md) | gRPC and REST examples, endpoint reference, and query-result limitations |
-| [CRUD APIs](crud.md) | Expose any registered SQLite file with typed JSON, scoped tokens, filters, and explicit write access |
+| [CRUD APIs](crud.md) | Expose ordinary registered SQLite files with typed JSON, scoped tokens, filters, and explicit write access |
 
 The daemon distinguishes writable **managed databases** from read-only inspection of **discovered source files**. CRUD APIs can write to discovered originals only after explicit opt-in. Listeners default to loopback; external access requires admin authentication and a TLS-terminating proxy. Start with a small scan root.
+
+Optional [Etcqlite inspection](usage.md#optional-etcqlite-inspection) uses authenticated, explicitly consented immutable projections, not internal stores or recovery backups. Raw user KV data requires separate consent; protected Etcqlite files cannot enter generic CRUD or replication.
 
 ## Developing and releasing
 

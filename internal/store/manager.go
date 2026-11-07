@@ -1,14 +1,18 @@
 package store
 
 import (
+	"context"
 	"database/sql"
+	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/mbianchidev/sql-not-so-lite/internal/etcqlite"
 	_ "modernc.org/sqlite"
 )
 
@@ -76,6 +80,8 @@ func (m *Manager) Create(name string) (*DBEntry, error) {
 	dbPath := filepath.Join(m.dataDir, name+".sqlite")
 	if _, err := os.Stat(dbPath); err == nil {
 		return nil, fmt.Errorf("database file %q already exists on disk", name)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return nil, fmt.Errorf("check managed database path: %w", err)
 	}
 
 	db, err := sql.Open("sqlite", dbPath+"?_pragma=journal_mode(wal)&_pragma=busy_timeout(5000)")
@@ -131,8 +137,13 @@ func (m *Manager) Get(name string) (*DBEntry, error) {
 	}
 
 	dbPath := filepath.Join(m.dataDir, name+".sqlite")
-	if _, err := os.Stat(dbPath); os.IsNotExist(err) {
+	if _, err := os.Stat(dbPath); errors.Is(err, os.ErrNotExist) {
 		return nil, fmt.Errorf("database %q not found", name)
+	} else if err != nil {
+		return nil, fmt.Errorf("check managed database path: %w", err)
+	}
+	if err := etcqlite.CheckOrdinaryFile(context.Background(), dbPath); err != nil {
+		return nil, fmt.Errorf("open managed database %q: %w", name, err)
 	}
 
 	db, err := sql.Open("sqlite", dbPath+"?_pragma=journal_mode(wal)&_pragma=busy_timeout(5000)")
@@ -177,6 +188,10 @@ func (m *Manager) List() []DBEntry {
 		name := strings.TrimSuffix(e.Name(), ".sqlite")
 		info, _ := e.Info()
 		dbPath := filepath.Join(m.dataDir, e.Name())
+		if err := etcqlite.CheckOrdinaryFile(context.Background(), dbPath); err != nil {
+			log.Printf("skip unsafe or unavailable managed database %q: %v", name, err)
+			continue
+		}
 
 		entry := DBEntry{
 			Name: name,
@@ -210,6 +225,14 @@ func (m *Manager) Drop(name string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	dbPath := filepath.Join(m.dataDir, name+".sqlite")
+	if _, err := os.Stat(dbPath); err == nil {
+		if err := etcqlite.CheckOrdinaryFile(context.Background(), dbPath); err != nil {
+			return err
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("check managed database before deletion: %w", err)
+	}
 	if entry, exists := m.databases[name]; exists {
 		if err := entry.DB.Close(); err != nil {
 			return fmt.Errorf("failed to close database: %w", err)
@@ -217,7 +240,6 @@ func (m *Manager) Drop(name string) error {
 		delete(m.databases, name)
 	}
 
-	dbPath := filepath.Join(m.dataDir, name+".sqlite")
 	for _, suffix := range []string{"", "-wal", "-shm"} {
 		os.Remove(dbPath + suffix)
 	}

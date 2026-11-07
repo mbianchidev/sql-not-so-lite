@@ -41,6 +41,9 @@ func New(cfg *config.Config) (*Daemon, error) {
 	if err := cfg.ValidateNetwork(); err != nil {
 		return nil, err
 	}
+	if err := cfg.ValidateEtcqlite(); err != nil {
+		return nil, err
+	}
 	if err := cfg.EnsureDirs(); err != nil {
 		return nil, fmt.Errorf("failed to create directories: %w", err)
 	}

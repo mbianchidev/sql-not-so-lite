@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"database/sql"
+	"encoding/hex"
 	"fmt"
 	"strings"
 	"time"
@@ -782,6 +783,14 @@ func (s *DatabaseService) Query(ctx context.Context, dbName, sqlStr string, para
 }
 
 func QueryDatabase(ctx context.Context, db *sql.DB, sqlStr string, params []string, limit, offset int) (*QueryResult, error) {
+	return queryDatabase(ctx, db, sqlStr, params, limit, offset, false)
+}
+
+func QueryProjection(ctx context.Context, db *sql.DB, sqlStr string, params []string, limit, offset int) (*QueryResult, error) {
+	return queryDatabase(ctx, db, sqlStr, params, limit, offset, true)
+}
+
+func queryDatabase(ctx context.Context, db *sql.DB, sqlStr string, params []string, limit, offset int, projection bool) (*QueryResult, error) {
 	if limit <= 0 {
 		limit = 1000
 	}
@@ -815,6 +824,7 @@ func QueryDatabase(ctx context.Context, db *sql.DB, sqlStr string, params []stri
 	}
 
 	resultRows := make([][]string, 0)
+	resultBytes := 0
 	skipped := 0
 	for rows.Next() {
 		if skipped < offset {
@@ -849,8 +859,16 @@ func QueryDatabase(ctx context.Context, db *sql.DB, sqlStr string, params []stri
 		for i, v := range vals {
 			if v == nil {
 				row[i] = "NULL"
+			} else if value, ok := v.([]byte); ok && projection {
+				row[i] = "hex:" + hex.EncodeToString(value)
 			} else {
 				row[i] = fmt.Sprintf("%v", v)
+			}
+			if projection {
+				resultBytes += len(row[i])
+				if resultBytes > 1024*1024 {
+					return nil, fmt.Errorf("projection results exceed 1 MiB; select fewer or smaller values")
+				}
 			}
 		}
 		resultRows = append(resultRows, row)

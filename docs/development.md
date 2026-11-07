@@ -62,6 +62,10 @@ CRUD/authentication tests exercise real disposable SQLite fixtures through the H
 
 Request-editor browser tests verify actual method/URL/header/body dispatch, exact large integer preservation, 204 and error responses, same-origin credential boundaries, cancellation, response-size limits, and responsive layouts. The sender uses a separate fetch path so a bad scoped token is shown as an HTTP response rather than signing out the administrator.
 
+Etcqlite tests use synthetic HTTP producers and disposable SQLite files. They cover raw-token/mTLS boundaries, identity ETags, strict projection schemas, binary KV consent/revocation, protected native/renamed files, stale/disconnected/missing state, cache isolation and generic-service behavior. Browser fixtures cover the same consent controls through the existing inspector. Focused checks: `go test ./internal/etcqlite ./internal/server ./internal/catalog ./internal/config` and `(cd web && npm run test:e2e -- tests/etcqlite.spec.ts)` after the GUI build. Do not run Go compilation concurrently with Vite's build: Vite replaces the directory consumed by `go:embed`.
+
+To verify a separately installed Etcqlite producer, run `SQNSL_ETCQLITE_BINARY=/absolute/path/to/etcqlite go test ./internal/etcqlite -run TestInstalledProducerProjectionContract`. This opt-in test initializes only disposable synthetic storage and verifies metadata/data projections and native-store exclusion. It never installs or starts a service.
+
 ## Protobuf changes
 
 Install `protoc`, `protoc-gen-go`, and `protoc-gen-go-grpc` on `PATH` before regenerating:
@@ -111,6 +115,7 @@ Paths are schematic: `catalog.sqlite` shares `server.data_dir` with managed data
 | [`internal/idle`](../internal/idle/) | Idle-connection checks |
 | [`internal/catalog`](../internal/catalog/) | Persistent discovery, schema, snapshot, and replication metadata |
 | [`internal/scanner`](../internal/scanner/) | Filesystem discovery, priorities, and repository heuristics |
+| [`internal/etcqlite`](../internal/etcqlite/) | Authenticated opt-in discovery/projection client, immutable validation, and protected-store schema classification |
 | [`internal/replicator`](../internal/replicator/) | Baseline snapshots and table-level differential sync |
 | [`internal/replicator/wal`](../internal/replicator/wal/) | WAL parser helpers, not the active synchronization path |
 | [`internal/schema`](../internal/schema/) | Schema extraction, hashing, and diff helpers |
@@ -119,6 +124,8 @@ Paths are schematic: `catalog.sqlite` shares `server.data_dir` with managed data
 | [`scripts`](../scripts/) | GUI build, release automation, package/formula generation, and checks |
 
 Managed databases remain standard SQLite files even when the daemon is stopped. GUI assets are embedded in the Go binary rather than served by a separate Node process. The gRPC and GUI/REST listeners use separate ports.
+
+The optional Etcqlite path is `authenticated inspector -> private immutable projection -> existing catalog/read-only REST inspector`. Projection files live under `server.data_dir/inspections`, outside the manager's flat database list and scanner results. No daemon startup, internal SQL access, native snapshot request, or generic replication/recovery is part of that path. No additional Go/frontend dependencies are required.
 
 Do not confuse schema/diff helpers with continuous runtime schema history, or WAL parsing helpers with streaming replication. [Current behavior and limitations](usage.md#replication-and-recovery) are part of the user-facing contract.
 

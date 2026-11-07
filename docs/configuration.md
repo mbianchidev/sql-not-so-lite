@@ -39,7 +39,7 @@ enabled = true
 sync_interval = "5s"
 ```
 
-`sqnsl config` prints the core server, idle, limits, and logging sections. Read the TOML file for scanner and replicator settings.
+`sqnsl config` prints the core server, idle, limits, logging, and non-secret Etcqlite settings. Read the TOML file for scanner, replicator, and credential-file settings.
 
 ## Server and storage
 
@@ -100,6 +100,49 @@ Replication starts only for databases selected through the GUI/API or `sqnsl rep
 
 Use positive Go durations such as `"15m"` or `"2h"` for scan intervals. Invalid or nonpositive scan/replication intervals produce a warning and fall back to 30 minutes/5 seconds. Unparseable idle-duration strings fall back to the idle defaults.
 
+## Optional Etcqlite inspection
+
+Etcqlite integration is **disabled by default**. It connects to one explicitly configured, already-running inspector endpoint. Enabling it does not install/start Etcqlite, scan its storage, contact its endpoint before inspection consent, or enable replication.
+
+Configure a workspace admin token **even on loopback**, plus a separate Etcqlite etcd token or TLS client certificate:
+
+```toml
+[server]
+bind_address = "127.0.0.1"
+auth_token_file = "/absolute/private/workspace-admin.token"
+
+[etcqlite]
+enabled = true
+endpoint = "http://127.0.0.1:2379"
+auth_token_file = "/absolute/private/etcd.token"
+```
+
+Keep token files and client private keys owner-only (`chmod 600`). `SQNSL_ETCQLITE_TOKEN` overrides the Etcqlite token file; the raw token is never saved or printed. Workspace clients use the normal admin **Bearer** token. Upstream requests use the **raw opaque etcd token**, without a Bearer prefix.
+
+| Setting | Default | Meaning |
+|---------|---------|---------|
+| `etcqlite.enabled` | `false` | Show the optional, consent-gated inspector connection |
+| `etcqlite.endpoint` | `"http://127.0.0.1:2379"` | HTTP(S) origin only, without credentials, paths, queries or fragments |
+| `etcqlite.auth_token_file` | `""` | Owner-only file containing an etcd token |
+| `etcqlite.tls_ca_file` | `""` | PEM CA bundle; otherwise use system trust |
+| `etcqlite.tls_cert_file` | `""` | PEM TLS client certificate |
+| `etcqlite.tls_key_file` | `""` | Owner-only PEM client private key |
+
+**Non-loopback Etcqlite traffic requires HTTPS and mTLS**, not just a token or caller-identity headers. Configure both client certificate and key; certificate verification cannot be disabled. Redirects and environment HTTP proxies are not used.
+
+```toml
+[etcqlite]
+enabled = true
+endpoint = "https://etcd-inspector.example:2379"
+tls_ca_file = "/absolute/private/ca.pem"
+tls_cert_file = "/absolute/private/client.pem"
+tls_key_file = "/absolute/private/client.key"
+```
+
+After explicit metadata consent, discovery checks can report source revision lag or a disconnected endpoint. Projection refreshes are manual. Files go under `server.data_dir/inspections` in a mode-`0700` directory, with mode-`0400` projections opened read-only/immutable. This private subdirectory is not a managed database, replica or recovery-snapshot directory.
+
+Raw keys/values require a separate explicit consent on each sensitive projection fetch. Metadata refresh, catalog removal, shutdown and restart revoke that process-local permission and remove the sensitive projection. Startup also cleans abandoned projection files after a crash. Limits are 64 MiB per projection and 1 MiB of query cell payload. See the [inspection workflow and safety boundaries](usage.md#optional-etcqlite-inspection).
+
 ## Environment overrides
 
 | Variable | Effect |
@@ -108,6 +151,7 @@ Use positive Go durations such as `"15m"` or `"2h"` for scan intervals. Invalid 
 | `SQNSL_SCAN_ROOT` | Replace the recursive scan root and reset the scanner's path-priority defaults under that root. |
 | `SQNSL_BIND_ADDRESS` | Override the shared HTTP/gRPC bind IP address. |
 | `SQNSL_AUTH_TOKEN` | Supply the admin bearer token without storing it in TOML. Empty or weak values are rejected. |
+| `SQNSL_ETCQLITE_TOKEN` | Supply the raw upstream etcd token, overriding its token file. Ignored while the integration is disabled; empty values are rejected when enabled. |
 
 Use absolute paths for these overrides. Container images set `HOME=/data` and keep configuration and storage under the persistent `/data` volume; see [containers](releases.md#containers).
 

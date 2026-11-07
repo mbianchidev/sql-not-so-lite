@@ -1,18 +1,24 @@
 package replicator
 
 import (
+	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 
+	"github.com/mbianchidev/sql-not-so-lite/internal/etcqlite"
 	_ "modernc.org/sqlite"
 )
 
 // CreateSnapshot creates a consistent snapshot of a source SQLite database
 // using VACUUM INTO, which produces a complete, defragmented copy.
 func CreateSnapshot(sourcePath, destPath string) (int64, error) {
+	if err := checkSnapshotPaths(sourcePath, destPath); err != nil {
+		return 0, err
+	}
 	destDir := filepath.Dir(destPath)
 	if err := os.MkdirAll(destDir, 0755); err != nil {
 		return 0, fmt.Errorf("failed to create snapshot dir: %w", err)
@@ -70,6 +76,9 @@ func CreateSnapshot(sourcePath, destPath string) (int64, error) {
 // RestoreSnapshot copies a snapshot file to the target path, replacing
 // whatever is there. It also removes any stale WAL/SHM sidecar files.
 func RestoreSnapshot(snapshotPath, targetPath string) error {
+	if err := checkSnapshotPaths(snapshotPath, targetPath); err != nil {
+		return err
+	}
 	if _, err := os.Stat(snapshotPath); err != nil {
 		return fmt.Errorf("snapshot not found: %w", err)
 	}
@@ -104,6 +113,20 @@ func RestoreSnapshot(snapshotPath, targetPath string) error {
 		os.Remove(targetPath + suffix)
 	}
 
+	return nil
+}
+
+func checkSnapshotPaths(source, target string) error {
+	if err := etcqlite.CheckOrdinaryFile(context.Background(), source); err != nil {
+		return fmt.Errorf("check snapshot source: %w", err)
+	}
+	if _, err := os.Stat(target); err == nil {
+		if err := etcqlite.CheckOrdinaryFile(context.Background(), target); err != nil {
+			return fmt.Errorf("check snapshot target: %w", err)
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("check snapshot target: %w", err)
+	}
 	return nil
 }
 

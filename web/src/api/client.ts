@@ -210,6 +210,35 @@ export interface DiscoveredDB {
   IsReplica: boolean;
   Favorite: boolean;
   Available: boolean;
+  Inspection?: EtcqliteInspection;
+}
+
+export interface EtcqliteInspection {
+  endpoint: string;
+  cluster_id: string;
+  member_id: string;
+  etag: string;
+  revision: string;
+  compact_revision: string;
+  source_revision: string;
+  schema_version: number;
+  engine_version: string;
+  api_version: string;
+  build: string;
+  dirty: boolean;
+  configuration_id: number | null;
+  includes_data: boolean;
+  state: 'ready' | 'stale' | 'disconnected' | 'missing' | 'disabled';
+  fetched_at: string;
+  checked_at: string;
+}
+
+export interface EtcqliteStatus {
+  enabled: boolean;
+  endpoint?: string;
+  state: string;
+  database?: DiscoveredDB;
+  error?: string;
 }
 
 export interface SnapshotInfo {
@@ -236,7 +265,7 @@ export interface SchemaTransitionInfo {
   DetectedAt: string;
 }
 
-interface RawDiscoveredDB {
+export interface RawDiscoveredDB {
   id: number;
   name: string;
   source_path: string;
@@ -253,6 +282,7 @@ interface RawDiscoveredDB {
   is_replica: boolean;
   favorite: boolean;
   available: boolean;
+  inspection?: EtcqliteInspection;
 }
 
 interface RawSnapshotInfo {
@@ -316,6 +346,7 @@ function toDiscoveredDB(db: RawDiscoveredDB): DiscoveredDB {
     IsReplica: db.is_replica,
     Favorite: db.favorite,
     Available: db.available,
+    Inspection: db.inspection,
   };
 }
 
@@ -450,6 +481,15 @@ export const api = {
   getScanStatus: () => request<ScanStatus>('/api/scan'),
   listDiscovered: async () =>
     (await request<RawDiscoveredDB[]>('/api/discovered')).map(toDiscoveredDB),
+  getEtcqliteStatus: async (): Promise<EtcqliteStatus> => {
+    const status = await request<Omit<EtcqliteStatus, 'database'> & { database?: RawDiscoveredDB }>('/api/etcqlite', { cache: 'no-store' });
+    return { ...status, database: status.database ? toDiscoveredDB(status.database) : undefined };
+  },
+  fetchEtcqliteProjection: async (includeData = false, signal?: AbortSignal) =>
+    toDiscoveredDB(await request<RawDiscoveredDB>('/api/etcqlite/projections', {
+      method: 'POST', cache: 'no-store', signal,
+      body: JSON.stringify({ ack_read_only_inspection: true, include_data: includeData, ack_sensitive_data: includeData }),
+    })),
   getDiscoveredSchema: (id: number) =>
     request<TableInfo[]>(`/api/discovered/${id}/schema`),
   getDiscoveredTable: (id: number, table: string, limit = 100, offset = 0) =>

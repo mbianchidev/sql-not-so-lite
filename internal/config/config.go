@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -17,6 +18,7 @@ type Config struct {
 	Log        LogConfig        `toml:"logging"`
 	Scanner    ScannerConfig    `toml:"scanner"`
 	Replicator ReplicatorConfig `toml:"replicator"`
+	Etcqlite   EtcqliteConfig   `toml:"etcqlite"`
 }
 
 type ServerConfig struct {
@@ -62,6 +64,16 @@ type ReplicatorConfig struct {
 	SnapshotRetention int    `toml:"snapshot_retention"`
 	ReplicaDir        string `toml:"replica_dir"`
 	SnapshotDir       string `toml:"snapshot_dir"`
+}
+
+type EtcqliteConfig struct {
+	Enabled       bool   `toml:"enabled"`
+	Endpoint      string `toml:"endpoint"`
+	AuthTokenFile string `toml:"auth_token_file"`
+	AuthToken     string `toml:"-" json:"-"`
+	TLSCAFile     string `toml:"tls_ca_file"`
+	TLSCertFile   string `toml:"tls_cert_file"`
+	TLSKeyFile    string `toml:"tls_key_file"`
 }
 
 const DefaultScanInterval = "30m"
@@ -117,6 +129,7 @@ func DefaultConfig() *Config {
 			ReplicaDir:        filepath.Join(baseDir, "replicas"),
 			SnapshotDir:       filepath.Join(baseDir, "snapshots"),
 		},
+		Etcqlite: EtcqliteConfig{Endpoint: "http://127.0.0.1:2379"},
 	}
 }
 
@@ -160,7 +173,61 @@ func Load() (*Config, error) {
 	if err := cfg.ValidateNetwork(); err != nil {
 		return nil, err
 	}
+	if cfg.Etcqlite.Enabled {
+		if token, ok := os.LookupEnv("SQNSL_ETCQLITE_TOKEN"); ok {
+			cfg.Etcqlite.AuthToken = strings.TrimSpace(token)
+			if cfg.Etcqlite.AuthToken == "" {
+				return nil, fmt.Errorf("SQNSL_ETCQLITE_TOKEN must not be empty when Etcqlite inspection is enabled")
+			}
+		}
+	}
+	if err := cfg.ValidateEtcqlite(); err != nil {
+		return nil, err
+	}
 	return cfg, nil
+}
+
+func (c *Config) ValidateEtcqlite() error {
+	if !c.Etcqlite.Enabled {
+		return nil
+	}
+	if len(c.Server.AuthToken) < 32 {
+		return fmt.Errorf("Etcqlite inspection requires a workspace admin token of at least 32 characters, including on loopback")
+	}
+	return c.Etcqlite.ValidateTransport()
+}
+
+func (c EtcqliteConfig) ValidateTransport() error {
+	endpoint, err := url.Parse(c.Endpoint)
+	if err != nil || endpoint.Host == "" || (endpoint.Scheme != "http" && endpoint.Scheme != "https") ||
+		endpoint.User != nil || endpoint.RawQuery != "" || endpoint.ForceQuery || endpoint.Fragment != "" ||
+		(endpoint.Path != "" && endpoint.Path != "/") {
+		return fmt.Errorf("etcqlite.endpoint must be an HTTP(S) origin without credentials, a path, query or fragment")
+	}
+	ip := net.ParseIP(endpoint.Hostname())
+	loopback := endpoint.Hostname() == "localhost" || (ip != nil && ip.IsLoopback())
+	hasCertificate := c.TLSCertFile != "" && c.TLSKeyFile != ""
+	if (c.TLSCertFile == "") != (c.TLSKeyFile == "") {
+		return fmt.Errorf("Etcqlite mTLS requires both tls_cert_file and tls_key_file")
+	}
+	if !loopback && (endpoint.Scheme != "https" || !hasCertificate) {
+		return fmt.Errorf("non-loopback Etcqlite inspection requires HTTPS with mTLS")
+	}
+	if endpoint.Scheme != "https" && (hasCertificate || c.TLSCAFile != "") {
+		return fmt.Errorf("Etcqlite TLS credentials require an HTTPS endpoint")
+	}
+	if c.AuthToken == "" && c.AuthTokenFile == "" && !hasCertificate {
+		return fmt.Errorf("Etcqlite inspection requires an etcd token or TLS client certificate")
+	}
+	if strings.ContainsAny(c.AuthToken, "\r\n") {
+		return fmt.Errorf("Etcqlite token must not contain line breaks")
+	}
+	for _, path := range []string{c.AuthTokenFile, c.TLSCAFile, c.TLSCertFile, c.TLSKeyFile} {
+		if path != "" && !filepath.IsAbs(path) {
+			return fmt.Errorf("Etcqlite credential paths must be absolute")
+		}
+	}
+	return nil
 }
 
 func (c *Config) ValidateNetwork() error {

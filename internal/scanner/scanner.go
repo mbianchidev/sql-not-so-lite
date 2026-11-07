@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io/fs"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/mbianchidev/sql-not-so-lite/internal/config"
+	"github.com/mbianchidev/sql-not-so-lite/internal/etcqlite"
 )
 
 type DiscoveredFile struct {
@@ -124,6 +126,10 @@ func (s *Scanner) ScanContext(ctx context.Context) ([]DiscoveredFile, error) {
 
 		// Validate SQLite magic bytes
 		if !ValidateSQLite(path) {
+			return nil
+		}
+		if err := etcqlite.CheckOrdinaryFile(ctx, path); err != nil {
+			log.Printf("discovery: skip protected or unreadable SQLite file %s: %v", path, err)
 			return nil
 		}
 

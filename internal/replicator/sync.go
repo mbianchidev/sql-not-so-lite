@@ -3,6 +3,7 @@ package replicator
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log"
 	"net/url"
@@ -13,6 +14,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/mbianchidev/sql-not-so-lite/internal/etcqlite"
 	_ "modernc.org/sqlite"
 )
 
@@ -53,6 +55,11 @@ func SyncTables(srcDB, dstDB *sql.DB, tables []string) error {
 }
 
 func syncTablesContext(ctx context.Context, srcDB, dstDB *sql.DB, tables []string) error {
+	for _, db := range []*sql.DB{srcDB, dstDB} {
+		if err := etcqlite.CheckOrdinaryDatabase(ctx, db); err != nil {
+			return err
+		}
+	}
 	srcTx, err := srcDB.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return fmt.Errorf("failed to begin source transaction: %w", err)
@@ -425,7 +432,7 @@ func InitialSync(sourcePath, replicaPath string) ([]string, error) {
 		return nil, fmt.Errorf("initial snapshot failed: %w", err)
 	}
 
-	srcDB, err := sql.Open("sqlite", sourcePath+"?_pragma=busy_timeout(5000)")
+	srcDB, err := OpenReadOnly(sourcePath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open source: %w", err)
 	}
@@ -464,11 +471,22 @@ func OpenReadOnly(path string) (*sql.DB, error) {
 		db.Close()
 		return nil, fmt.Errorf("failed to connect: %w", err)
 	}
+	if err := etcqlite.CheckOrdinaryDatabase(context.Background(), db); err != nil {
+		db.Close()
+		return nil, err
+	}
 	return db, nil
 }
 
 // OpenReplica opens a replica database for writing.
 func OpenReplica(path string) (*sql.DB, error) {
+	if _, err := os.Stat(path); err == nil {
+		if err := etcqlite.CheckOrdinaryFile(context.Background(), path); err != nil {
+			return nil, err
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return nil, fmt.Errorf("check replica path: %w", err)
+	}
 	db, err := sql.Open("sqlite", path+"?_pragma=journal_mode(wal)&_pragma=busy_timeout(5000)")
 	if err != nil {
 		return nil, fmt.Errorf("failed to open replica: %w", err)
