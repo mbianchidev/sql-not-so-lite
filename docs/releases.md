@@ -122,6 +122,12 @@ publication waits for the complete CI workflow, including all native checks.
 This shortens the packaging dependency chain at the cost of one additional
 Ubuntu job's checkout and Node.js setup.
 
+The release tests also exercise GUI verification with synthetic archives and a
+mock daemon. GUI smoke checks require the entry module and HTML-linked JavaScript
+bundles to return successful responses, JavaScript content types, and nonempty
+content. A small import-only entry module is valid; there is no minimum bundle
+size.
+
 The frontend is built once per workflow revision and passed as a SHA-named
 artifact to snapshot packaging and release publication. Consumers download it
 outside the checkout, then the shared GUI build hook stages it after GoReleaser's

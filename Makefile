@@ -17,7 +17,7 @@ test:
 	go test ./... -timeout 60s -v
 
 test-release:
-	node --test scripts/release.test.mjs scripts/homebrew.test.mjs
+	node --test scripts/release.test.mjs scripts/homebrew.test.mjs scripts/verify-release.test.mjs
 
 # Run tests (short)
 test-short:
@@ -90,7 +90,7 @@ help:
 	@echo "  all          - Build GUI + Go binary (default)"
 	@echo "  build        - Build Go binary"
 	@echo "  test         - Run all tests"
-	@echo "  test-release - Test release automation with disposable repositories and mocked GitHub"
+	@echo "  test-release - Test release automation, formula generation, and GUI checks with mocks"
 	@echo "  proto        - Regenerate protobuf code"
 	@echo "  gui          - Build React GUI"
 	@echo "  dev-gui      - Run GUI dev server"
