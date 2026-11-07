@@ -39,11 +39,26 @@ func TestScanSkipsEtcqliteWithoutFilenameHeuristics(t *testing.T) {
 		t.Fatal(err)
 	}
 	db.Close()
+	interchange := filepath.Join(root, "renamed-interchange.db")
+	db, err = sql.Open("sqlite", interchange)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`
+		CREATE TABLE interchange_meta(kind TEXT,format INTEGER,reference TEXT,revision INTEGER,compact_revision INTEGER);
+		INSERT INTO interchange_meta VALUES ('bbolt-interchange',2,'3.7.3',42,-1);
+		CREATE TABLE interchange_buckets(name BLOB PRIMARY KEY);
+		CREATE TABLE interchange_entries(bucket BLOB,key BLOB,value BLOB,PRIMARY KEY(bucket,key));
+	`); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	db.Close()
 	cfg := config.DefaultConfig().Scanner
 	cfg.ScanRoot = root
 	files, err := New(cfg).Scan()
 	if err != nil || len(files) != 1 || filepath.Base(files[0].Path) != "node.db" {
-		t.Fatalf("projection scanned or ordinary node.db excluded: %+v, %v", files, err)
+		t.Fatalf("protected artifact scanned or ordinary node.db excluded: %+v, %v", files, err)
 	}
 }
 

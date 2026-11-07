@@ -151,7 +151,7 @@ Inspect the returned `id` through the existing `/api/discovered/:id/schema`, `/t
 
 `GET /api/etcqlite` does not contact the endpoint before consent. After consent, source failures return status `200` with truthful `state:"disconnected"` and an error, while cached metadata remains separately inspectable. It does not report the standalone daemon as failed. Projection fetches return `400` for invalid/partial consent, `401` for missing workspace authentication, `404` when disabled, `412` for a changed identity, `502` for an unsafe/incompatible artifact, or `503` for an unavailable endpoint, credentials or cache.
 
-Upstream discovery is authenticated `GET /etcqlite/v1/discovery`; projection creation is `POST /etcqlite/v1/projections` with its exact ETag in `If-Match`. Upstream errors are not retried or displayed as response payloads. Native snapshots are never requested. Projections and native Etcqlite schemas cannot be exposed through CRUD, opened writable, replicated, or restored as generic SQLite; protected discovery operations return `403`.
+Upstream discovery is authenticated `GET /etcqlite/v1/discovery`; projection creation is `POST /etcqlite/v1/projections` with its exact ETag in `If-Match`. Upstream errors are not retried or displayed as response payloads. Native snapshots are never requested. Projections, native Etcqlite schemas and sensitive `bbolt-interchange` staging artifacts cannot be exposed through CRUD, opened writable, replicated, or restored as generic SQLite; protected discovery operations return `403`. Interchange protection uses only the `interchange_meta` schema/marker, without reading sensitive entry rows.
 
 ### Health and statistics
 

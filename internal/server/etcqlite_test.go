@@ -439,3 +439,96 @@ func TestHTTPInspectorErrorsDoNotExposeCredentialsOrPrivatePaths(t *testing.T) {
 		t.Fatal("private credential information leaked through the catalog")
 	}
 }
+
+func TestInterchangeArtifactsCannotEnterGenericDatabasePaths(t *testing.T) {
+	server, handler, manager := newInspectorHTTPServer(t, "http://127.0.0.1:1")
+	path := filepath.Join(server.cfg.Server.DataDir, "renamed_interchange.sqlite")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`
+		CREATE TABLE interchange_meta(kind TEXT,format INTEGER,reference TEXT,revision INTEGER,compact_revision INTEGER);
+		INSERT INTO interchange_meta VALUES ('bbolt-interchange',2,'3.7.3',42,-1);
+		CREATE TABLE interchange_buckets(name BLOB PRIMARY KEY);
+		CREATE TABLE interchange_entries(bucket BLOB,key BLOB,value BLOB,PRIMARY KEY(bucket,key));
+		INSERT INTO interchange_buckets VALUES (x'61757468');
+		INSERT INTO interchange_entries VALUES (x'61757468',x'66697874757265',x'001122ff');
+	`); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	original, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	footer := sha256.Sum256(original)
+	original = append(original, footer[:]...)
+	if err := os.WriteFile(path, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	id, err := server.catalog.UpsertDiscovered(&catalog.DiscoveredDB{Name: "renamed_interchange", SourcePath: path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	prefix := "/api/discovered/" + strconv.FormatInt(id, 10)
+	for _, resource := range []string{"schema", "table?name=interchange_entries", "snapshots"} {
+		response := exposureRequest(t, handler, "GET", prefix+"/"+resource, fixtureAdminToken, "")
+		if response.Code != 403 {
+			t.Fatalf("interchange artifact was exposed through generic inspection: %s %d", resource, response.Code)
+		}
+	}
+	for _, writable := range []bool{false, true} {
+		body := fmt.Sprintf(`{"alias":"blocked","discovered_id":%d,"tables":["interchange_entries"],"writable":%t}`, id, writable)
+		response := exposureRequest(t, handler, "POST", "/api/exposures", fixtureAdminToken, body)
+		if response.Code != 403 {
+			t.Fatalf("interchange artifact entered generic CRUD registration: %d", response.Code)
+		}
+	}
+	if err := server.catalog.CreateAPIExposure(&catalog.APIExposure{
+		Alias: "legacy", DatabaseID: id, Tables: []string{"interchange_entries"},
+		Writable: true, TokenHash: tokenHash("synthetic-scoped-token"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, method := range []string{"GET", "POST"} {
+		response := exposureRequest(t, handler, method, "/api/data/legacy/interchange_entries", "synthetic-scoped-token", "{}")
+		if response.Code != 403 {
+			t.Fatalf("manually registered interchange CRUD API was not blocked: %s %d", method, response.Code)
+		}
+	}
+	if _, err := manager.Get("renamed_interchange"); !errors.Is(err, etcqlite.ErrProtected) {
+		t.Fatalf("interchange artifact was opened as a writable managed database: %v", err)
+	}
+	entries := manager.List()
+	for i := range entries {
+		if entries[i].Path == path {
+			t.Fatal("interchange artifact appeared in the managed database list")
+		}
+	}
+	if err := manager.Drop("renamed_interchange"); !errors.Is(err, etcqlite.ErrProtected) {
+		t.Fatalf("managed deletion could remove an interchange artifact: %v", err)
+	}
+	target := filepath.Join(t.TempDir(), "replica.sqlite")
+	if _, err := replicator.InitialSync(path, target); !errors.Is(err, etcqlite.ErrProtected) {
+		t.Fatalf("interchange artifact was table-replicated: %v", err)
+	}
+	if err := replicator.RestoreSnapshot(path, target); !errors.Is(err, etcqlite.ErrProtected) {
+		t.Fatalf("interchange artifact was treated as a generic recovery source: %v", err)
+	}
+	generic := filepath.Join(t.TempDir(), "ordinary.sqlite")
+	createHTTPTestDatabase(t, generic)
+	if err := replicator.RestoreSnapshot(generic, path); !errors.Is(err, etcqlite.ErrProtected) {
+		t.Fatalf("generic recovery could overwrite an interchange artifact: %v", err)
+	}
+	if _, err := os.Stat(target); !os.IsNotExist(err) {
+		t.Fatal("blocked interchange replication/recovery created a target")
+	}
+	after, err := os.ReadFile(path)
+	if err != nil || sha256.Sum256(after) != sha256.Sum256(original) {
+		t.Fatal("generic database paths modified the interchange artifact")
+	}
+}

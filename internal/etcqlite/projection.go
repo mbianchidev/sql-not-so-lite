@@ -16,7 +16,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-var ErrProtected = errors.New("Etcqlite internal stores and projections cannot be managed, exposed, replicated or recovered as generic SQLite databases; use the consented Etcqlite inspector")
+var ErrProtected = errors.New("Etcqlite internal stores, interchange artifacts and projections cannot be managed, exposed, replicated or recovered as generic SQLite databases; use the consented Etcqlite inspector")
 
 type schemaColumn struct {
 	name   string
@@ -234,9 +234,32 @@ func CheckOrdinaryFile(ctx context.Context, path string) error {
 }
 
 func CheckOrdinaryDatabase(ctx context.Context, db *sql.DB) error {
-	var projection bool
-	if err := db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name='projection_metadata')`).Scan(&projection); err != nil {
+	var projection, interchange bool
+	if err := db.QueryRowContext(ctx, `
+		SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name='projection_metadata'),
+			EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name='interchange_meta')
+	`).Scan(&projection, &interchange); err != nil {
 		return fmt.Errorf("classify SQLite schema: %w", err)
+	}
+	if interchange {
+		actual, err := columns(ctx, db, "interchange_meta")
+		if err != nil {
+			return fmt.Errorf("classify interchange schema: %w", err)
+		}
+		signature := []schemaColumn{
+			{name: "kind", kind: "TEXT"}, {name: "format", kind: "INTEGER"},
+			{name: "reference", kind: "TEXT"}, {name: "revision", kind: "INTEGER"},
+			{name: "compact_revision", kind: "INTEGER"},
+		}
+		if containsColumns(actual, signature) {
+			var marker bool
+			if err := db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM interchange_meta WHERE kind='bbolt-interchange' AND format=2)`).Scan(&marker); err != nil {
+				return fmt.Errorf("classify interchange marker: %w", err)
+			}
+			if marker {
+				return ErrProtected
+			}
+		}
 	}
 	if projection {
 		actual, err := columns(ctx, db, "projection_metadata")

@@ -99,6 +99,8 @@ Choose **Refresh metadata** to generate a new metadata-only capture. For raw use
 
 **Not a backup:** these immutable projections cannot restore Etcqlite. Generic managed writes, CRUD exposure, table replication, snapshot recovery and schema history are unavailable for them. Native `node.db` stores and native recovery images are also rejected by schema-only classification, including renamed or manually cataloged files. Ordinary SQLite discovery and CRUD behavior is unchanged.
 
+Sensitive disk-backed bbolt interchange artifacts are protected too. Their `interchange_meta` marker has `kind='bbolt-interchange'`, `format=2` and a `reference` such as `3.7.3`; `interchange_buckets` and `interchange_entries` hold full binary source records with a SHA-256 footer. These are staging artifacts, not inspector projections or generic database/recovery sources. Classification reads only schema and the safe marker, never bucket/entry rows.
+
 Discovery uses the authenticated Etcqlite format-1 contract. Projection requests pin its exact identity ETag; an identity change is not silently followed. Remove the old catalog entry and explicitly reconnect to accept a different cluster/member. The integration never requests the full sensitive native snapshot endpoint, and never uses table polling for consensus, HA or recovery.
 
 ## Replication and recovery
