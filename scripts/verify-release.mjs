@@ -122,10 +122,15 @@ bind_address = "${image ? '0.0.0.0' : '127.0.0.1'}"
     assert.ok(!html.includes('GUI not built'), 'Release contains the placeholder GUI')
     const asset = html.match(/src="(\/assets\/[^"]+\.js)"/)?.[1]
     assert.ok(asset, 'Release GUI has no compiled JavaScript entry point')
-    const javascript = await fetch(`${url}${asset}`)
-    assert.ok(javascript.ok, `Embedded GUI asset returned ${javascript.status}`)
-    assert.match(javascript.headers.get('content-type') ?? '', /javascript/)
-    assert.ok((await javascript.text()).length > 1000, 'Embedded GUI asset is empty')
+    const assets = new Set([asset])
+    for (const match of html.matchAll(/href="(\/assets\/[^"]+\.js)"/g)) assets.add(match[1])
+    for (const path of assets) {
+      const javascript = await fetch(`${url}${path}`)
+      assert.ok(javascript.ok, `Embedded GUI asset returned ${javascript.status}: ${path}`)
+      assert.match(javascript.headers.get('content-type') ?? '', /javascript/,
+        `Embedded GUI asset has invalid content type: ${path}`)
+      assert.ok((await javascript.text()).trim().length > 0, `Embedded GUI asset is empty: ${path}`)
+    }
   } finally {
     if (created) {
       try {

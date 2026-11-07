@@ -88,8 +88,8 @@ jobs:
         with:
           node-version-file: .node-version
 
-      - name: Test release automation and formula generation
-        run: node --test scripts/release.test.mjs scripts/homebrew.test.mjs
+      - name: Test release automation, formula generation, and GUI verification
+        run: node --test scripts/release.test.mjs scripts/homebrew.test.mjs scripts/verify-release.test.mjs
 
   packages:
     name: Release packaging
