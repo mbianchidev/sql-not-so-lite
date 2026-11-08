@@ -7,7 +7,7 @@ require (
 	github.com/spf13/cobra v1.10.2
 	google.golang.org/grpc v1.85.0
 	google.golang.org/protobuf v1.36.12
-	modernc.org/sqlite v1.61.0
+	modernc.org/sqlite v1.61.1
 )
 
 require (
