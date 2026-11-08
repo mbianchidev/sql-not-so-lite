@@ -148,6 +148,12 @@ saved. Homebrew bundles are cached by runner, architecture, Ruby runtime, and
 Gemfile lock hash; installation/style/tests still run on both Mac architectures.
 Caches only accelerate recomputation and are not substitutes for successful tests.
 
+Hosted Mac jobs move the unrelated preinstalled `aws/tap` and `hashicorp/tap`
+checkouts to runner temporary storage before Homebrew's developer tooling loads
+formulae. This avoids stale SAM CLI and Vagrant imports without uninstalling
+runner tools or filtering diagnostics. The local Homebrew test helper does not
+alter unrelated taps.
+
 Go compilation/test worker counts are bounded using the Linux runner's available
 CPU and memory. Target builds run at most two at a time without multiplying
 per-target package parallelism. PR matrices fail fast; release matrices collect

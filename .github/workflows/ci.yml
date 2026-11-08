@@ -178,6 +178,21 @@ jobs:
         if: runner.os == 'Linux'
         run: bash scripts/test-packages.sh dist
 
+      - name: Isolate unrelated preinstalled Homebrew taps
+        if: runner.os == 'macOS'
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: "1"
+        run: |
+          repository=$(brew --repository)
+          temp=$(mktemp -d "$RUNNER_TEMP/sqnsl-unused-taps.XXXXXX")
+          # brew untap imports these formulae and may uninstall runner tools.
+          for owner in aws hashicorp; do
+            if [ -d "$repository/Library/Taps/$owner/homebrew-tap" ]; then
+              echo "Isolating unrelated preinstalled tap: $owner/tap"
+              mv "$repository/Library/Taps/$owner/homebrew-tap" "$temp/$owner"
+            fi
+          done
+
       - name: Resolve Homebrew bundle cache
         if: runner.os == 'macOS'
         id: homebrew-cache
