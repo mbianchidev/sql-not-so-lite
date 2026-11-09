@@ -198,7 +198,7 @@ test('release tag gate requires an explicit tag ref', t => {
   assert.throws(() => verifyReleaseTag(f, ''), /Set RELEASE_REF to the release tag ref/)
 })
 
-test('publishes a normalized annotated tag on main without bumping unrelated files', async t => {
+test('publishes a normalized annotated tag independently of the Homebrew tap without bumping unrelated files', async t => {
   const f = fixture(t)
   const before = f.git('rev-parse', 'refs/tags/v0.0.1')
   const result = await f.release(['1.2.3'])
@@ -211,8 +211,10 @@ test('publishes a normalized annotated tag on main without bumping unrelated fil
   assert.equal(f.git('rev-parse', 'HEAD'), f.commit)
   assert.equal(JSON.parse(readFileSync(join(f.root, 'web/package.json'), 'utf8')).version, '0.0.0')
   assert.equal(f.journals()[0].outcome, 'released')
+  assert.equal(f.journals()[0].baseline.tap, undefined)
   assert.match(result.output, /v1.2.3.*released/)
   assert.ok(f.readState().calls.some(call => call.endpoint.includes('/actions/runs/123')))
+  assert.ok(!f.readState().calls.some(call => call.endpoint.includes('/homebrew-tap/')))
   assert.ok(!f.readState().calls.some(call => call.method === 'POST' || call.method === 'DELETE'))
   assert.ok(!existsSync(join(f.root, '.git/sqnsl-release.lock')))
 })
@@ -444,6 +446,9 @@ test('failed CI rolls back only owned tags after proving publication was skipped
   assert.equal(f.git('rev-parse', 'refs/heads/feature-work'), f.commit)
   assert.equal(f.git('status', '--porcelain'), '')
   assert.equal(f.journals()[0].outcome, 'rolled-back')
+  assert.deepEqual(f.journals()[0].publicationJobs.map(job => job.name), [
+    'Publish release and multiarch image',
+  ])
   assert.ok(f.readState().calls.some(call =>
     call.endpoint === 'repos/mbianchidev/sql-not-so-lite/actions/runs/123/attempts/1/jobs?per_page=100',
   ))
@@ -462,6 +467,16 @@ test('a failed unpublished historical run permits a new release without claiming
   ))
   assert.ok(!f.readState().calls.some(call => call.method !== 'GET'))
   assert.equal(f.git('rev-parse', 'v0.0.3^{commit}'), f.commit)
+})
+
+test('an unpublished historical run without a Homebrew job also permits a safe retry', async t => {
+  const f = fixture(t, { previousRuns: [{ withoutHomebrewJob: true }] })
+  const result = await f.release()
+  assert.equal(result.code, 0, result.output)
+  assert.deepEqual(f.journals()[0].previousRuns[0].publicationJobs.map(job => job.name), [
+    'Publish release and multiarch image',
+  ])
+  assert.equal(f.journals()[0].runId, 123)
 })
 
 test('multiple failed, cancelled, or timed-out unpublished runs are excluded even at the same commit', async t => {
@@ -499,7 +514,9 @@ for (const [name, previousRun, options, message] of [
   ['a rerun of a historical release', { run_attempt: 2 }, {}, /identity\/attempt changed/],
   ['historical image publication', { publicationStarted: true }, {}, /may have started publication/],
   ['historical Homebrew publication', { homebrewPublished: true }, {}, /may have started publication/],
-  ['missing historical publication jobs', { missingJobs: true }, {}, /Cannot prove both/],
+  ['missing historical source publication job', { missingJobs: true }, {}, /Cannot identify publication jobs/],
+  ['duplicate historical source publication jobs', { duplicatePublicationJob: true }, {}, /Cannot identify publication jobs/],
+  ['duplicate historical Homebrew publication jobs', { duplicateHomebrewJob: true }, {}, /Cannot identify publication jobs/],
   ['inaccessible historical publication jobs', { jobsFailure: true }, {}, /HTTP 503/],
   ['a malformed historical commit', { head_sha: 'invalid' }, {}, /identity\/attempt changed/],
   ['a historical run rerun during verification', {}, { previousRerunOnRead: true }, /identity\/attempt changed/],
@@ -579,7 +596,6 @@ test('help and invalid CLI arguments leave the checkout and GitHub untouched', a
 for (const [name, options, message] of [
   ['existing GitHub release', { existingRelease: true }, /already exists/],
   ['existing GHCR image without a Git tag', { existingImage: true }, /already has.*GHCR/],
-  ['existing Homebrew version', { formulaVersion: '1.2.3' }, /already exists.*Homebrew/],
   ['missing package permissions', { noPackageAccess: true }, /read:packages/],
   ['disabled release workflow', { disabled: true }, /workflow is missing or disabled/],
   ['read-only repository access', { readOnly: true }, /Need push access/],
@@ -698,12 +714,11 @@ test('tag pushes do not follow unrelated annotated tags from Git configuration',
   assert.equal(f.git('ls-remote', '--refs', 'origin', 'refs/tags/scratch-tag'), '')
 })
 
-test('the first packaged release allows an absent GHCR package and formula', async t => {
+test('the first packaged release allows an absent GHCR package', async t => {
   const f = fixture(t, { firstRelease: true })
   const result = await f.release()
   assert.equal(result.code, 0, result.output)
   assert.deepEqual(f.journals()[0].baseline.images, [])
-  assert.equal(f.journals()[0].baseline.tap.version, null)
 })
 
 test('SIGINT cancels and waits for the exact owned run before deleting tags', async t => {
@@ -746,7 +761,8 @@ for (const [name, options, message] of [
   ['cancellation fails', { scenario: 'cancel-failure' }, /Cancellation request failed/],
   ['cancellation never reaches terminal state', { scenario: 'cancel-hangs' }, /deadline|timed out/],
   ['publication job data is inaccessible', { scenario: 'ci-failure', jobsFailure: true }, /HTTP 403/],
-  ['publication jobs cannot both be identified', { scenario: 'ci-failure', missingJobs: true }, /Cannot prove both/],
+  ['the source publication job cannot be identified', { scenario: 'ci-failure', missingJobs: true }, /Cannot identify publication jobs/],
+  ['source publication jobs have duplicate identities', { scenario: 'ci-failure', duplicatePublicationJob: true }, /Cannot identify publication jobs/],
   ['the run was rerun by another actor', { scenario: 'ci-failure', rerunOnRead: true }, /identity\/attempt changed/],
   ['multiple runs claim the tag', { scenario: 'ci-failure', concurrentRun: true }, /Multiple Release runs/],
   ['the run points to a different commit', { scenario: 'ci-failure', wrongHead: true }, /identity\/attempt changed/],
@@ -772,12 +788,12 @@ for (const [name, options, message] of [
 }
 
 for (const scenario of ['publish-failure', 'homebrew-failure']) {
-  test(`${scenario} retains partially published GitHub, GHCR, and Homebrew state for coordinated recovery`, async t => {
+  test(`${scenario} retains partially published GitHub and GHCR state for coordinated recovery`, async t => {
     const f = fixture(t, { scenario })
     const result = await f.release()
     assert.equal(result.code, 2, result.output)
     assert.match(result.output, /Publication started or may have started/)
-    assert.match(result.output, /GHCR version\/latest.*Homebrew/)
+    assert.match(result.output, /GitHub assets and GHCR version\/latest images/)
     assert.doesNotMatch(result.output, /Rollback complete:/)
     assert.ok(f.git('ls-remote', '--refs', 'origin', 'refs/tags/v1.2.3'))
     const journal = f.journals()[0]

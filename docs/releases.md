@@ -19,12 +19,15 @@ Every binary contains the built web GUI and a release version shared by
 `sqnsl version`, the HTTP health endpoint, and gRPC `Ping`. The archives also
 contain the README and MIT license. `checksums.txt` covers all eight artifacts.
 
-The Homebrew formula is published to
-[mbianchidev/homebrew-tap](https://github.com/mbianchidev/homebrew-tap) after a
-stable release. It selects a verified archive for the current OS and architecture.
-The tap is bootstrapped separately; its formula becomes available with the first
-packaged stable release. Prereleases publish versioned artifacts and container
-images, but do not change the formula or the container's `latest` tag.
+Homebrew publication is managed separately in
+[mbianchidev/homebrew-tap](https://github.com/mbianchidev/homebrew-tap). The formula
+selects a verified archive for the current OS and architecture; this repository's
+release workflow does not write to the tap. The
+[pending central updater](#central-homebrew-publication) will publish stable
+formula updates after artifact verification and native tap CI,
+normally within an hour of published artifacts once enabled. Prereleases publish
+versioned artifacts and container images, but do not change the formula or the
+container's `latest` tag.
 
 ## Portable archives
 
@@ -261,16 +264,17 @@ needed; `web/package.json` remains the private frontend package's `0.0.0`.
 Both `X.Y.Z` and `vX.Y.Z` are accepted. Leading zeroes, prerelease/build suffixes,
 whitespace, and extra arguments are rejected. Numeric components are compared
 without floating-point truncation. The version must advance beyond existing
-stable Git tags, GitHub releases (including drafts), GHCR tags, and the Homebrew
-formula. Existing target archives/images, partial architecture images, and
-local/remote tags are conflicts, never overwritten.
+stable Git tags, GitHub releases (including drafts), and GHCR tags. Existing
+target archives/images, partial architecture images, and local/remote tags are
+conflicts, never overwritten.
 
 A failed version is reusable when all its previous Release runs completed
-with `failure`, `cancelled`, or `timed_out` on their first attempt, and **both**
-publication jobs were skipped. The script verifies each run's identity and
-attempt-specific jobs, rechecks its live state, and requires no target
-release/image/formula or local/remote tag to remain. Active, successful, rerun,
-previously publishing, or unverifiable historical runs still block reuse.
+with `failure`, `cancelled`, or `timed_out` on their first attempt, and the source
+publication job was skipped, along with the retired Homebrew job if present in
+a historical run. The script verifies each run's identity and attempt-specific
+jobs, rechecks its live state, and requires no target release/image or
+local/remote tag to remain. Active, successful, rerun, previously publishing,
+or unverifiable historical runs still block reuse.
 There is no need to delete old workflow runs to retry a pre-publication failure.
 
 The script inventories publication state again immediately before creating the
@@ -281,32 +285,36 @@ IDs are excluded even when they share the current commit; the script never
 watches or cancels an old run as the new invocation's run. A changed/rerun
 historical run, a rerun of the new run, or multiple new matching runs makes
 ownership uncertain and stops automatic cleanup. Successful completion also
-requires the expected nonempty release assets, canonical GHCR version tag,
-and updated Homebrew formula to be visible.
+requires the expected nonempty release assets and canonical GHCR version tag
+to be visible. It neither queries the tap nor waits for an independently
+verified Homebrew update.
 
 ### Rollback and recovery
 
 `SIGINT`, `SIGTERM`, timeouts, and failures enter the same bounded cleanup path.
 Before deleting a pushed tag, the script identifies its owned run, requests
 cancellation if needed, and waits for terminal state. It then verifies that
-**both** publication jobs were skipped and that no target release/image/formula
-has appeared. Only then does it compare-and-delete its own remote tag using
-an exact-object lease and delete the local tag using Git's expected-old-object
-check. These operations never rewrite a branch or delete another writer's tag.
+the source publication job and any recorded legacy Homebrew job were skipped
+and that no target release/image has appeared. Only then does it compare-and-delete
+its own remote tag using an exact-object lease and delete the local tag using
+Git's expected-old-object check. These operations never rewrite a branch or
+delete another writer's tag.
 
-Once GoReleaser or Homebrew publication has started, rollback is **not
+Once source publication has started, rollback is **not
 automatically complete**. GitHub assets may already be downloaded; GHCR version
-and architecture images or `latest` may already exist; the tap may have a new
-formula commit. Blind deletion/reversion would risk consumers and concurrent
-releases. The script preserves these resources and the tag, exits `2`, and
+and architecture images or `latest` may already exist; an independent tap update
+may have consumed published archives. Blind deletion/reversion would risk
+consumers and concurrent releases. The script preserves these resources and
+the tag, exits `2`, and
 prints the exact run and recovery journal. It also exits `2` if cancellation,
 ownership, API visibility, registration, or cleanup cannot be confirmed.
 
 Recovery journals are stored in the common Git directory under
 `sqnsl-releases/vVERSION-INVOCATION.json`. They record the target commit/tag
 object, invocation/run identity, verified historical run IDs/commits/publication
-jobs, cleanup progress, and prior/current release, GHCR image IDs/digests/tags
-(including `latest`), and tap commit/formula identity.
+jobs, cleanup progress, and prior/current release and GHCR image IDs/digests/tags
+(including `latest`). Tap state is no longer inventoried by the source release
+script.
 They contain no tokens and are not committed. A lock in `sqnsl-release.lock`
 serializes local invocations across worktrees.
 
@@ -355,10 +363,9 @@ The pre-existing `v0.0.1` and `v0.0.2` source-only releases are never modified.
 ### Publication credentials
 
 The repository's `GITHUB_TOKEN` publishes release assets and GHCR images with
-`contents: write` and `packages: write`. `HOMEBREW_TAP_SSH_KEY` is a separate
-write-enabled SSH deploy key restricted to `mbianchidev/homebrew-tap`; it is
-already configured as a source-repository Actions secret. It cannot write to
-other repositories. Stable releases check this secret before publishing.
+`contents: write` and `packages: write`. Source releases need no tap-write secret
+or cross-repository credential. The planned tap updater will read public stable
+releases using credentials managed in the tap repository.
 
 GitHub initially makes a newly published container package private, even for a
 public source repository. After the first successful release, change the
@@ -366,16 +373,25 @@ public source repository. After the first successful release, change the
 settings to allow anonymous pulls. This is a one-time GitHub setting, not a
 container build option.
 
-Formula generation consumes the published release's checksums, not placeholder
-hashes. GoReleaser's deprecated `brews` integration is deliberately not used:
-the tap uses a formula so the daemon works with `brew services`. Formula updates
-commit directly to the tap's `main` using its scoped deploy key.
+### Central Homebrew publication
 
-If tap publication fails after the release has published and the script has
-exited with incomplete recovery, rerun only the failed `Update Homebrew tap`
-job. Formula updates are idempotent; do not republish or retag the release.
-The tap's CI installs and tests the actual published formula on Intel and ARM
-Macs.
+Central tap automation is being introduced separately and is not enabled by
+this source-repository change. Once enabled, it will check all included projects'
+public stable releases hourly, verify each supported archive's actual bytes
+against GitHub's SHA-256 and published `checksums.txt`, and open one verified
+batch update PR. The complete native tap CI must pass before a separate trusted
+default-branch workflow auto-merges eligible release-only bot updates, subject
+to review guards. Updates should normally appear within an hour of published
+artifacts. The automation implementation PRs remain drafts for human review.
+
+If an update is delayed or blocked, inspect the central updater's PR and CI in
+the tap repository. Until that automation is enabled, coordinate formula updates
+there; rerunning this repository's release workflow does not update Homebrew.
+Do not republish or retag a valid source release to repair a tap update.
+
+The tap uses a formula so the daemon works with `brew services`; GoReleaser's
+deprecated `brews` integration is not used. The local formula generator remains
+only for snapshot installation tests, including checksum and architecture checks.
 
 ## Local verification
 
