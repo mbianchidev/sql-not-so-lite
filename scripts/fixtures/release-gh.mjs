@@ -26,7 +26,6 @@ while (args.length) {
 }
 
 const repo = 'repos/mbianchidev/sql-not-so-lite'
-const tap = 'repos/mbianchidev/homebrew-tap'
 const packages = 'users/mbianchidev/packages'
 const tag = state.tag
 const ref = `refs/tags/${tag}`
@@ -148,16 +147,6 @@ if (endpoint === repo) {
       metadata: { container: { tags: [state.partialImageOnly ? `${tag.slice(1)}-amd64` : tag.slice(1), 'latest'] } } })
   }
   finish(versions)
-} else if (endpoint === `${tap}/git/ref/heads/main`) {
-  finish({ object: { sha: (state.published && state.scenario !== 'homebrew-failure' ? 'd' : 'c').repeat(40) } })
-} else if (endpoint?.startsWith(`${tap}/contents/Formula/sql-not-so-lite.rb?`)) {
-  if (state.firstRelease && !state.published) finish(null, 404)
-  else {
-    const version = state.formulaVersion ??
-      (state.published && state.scenario !== 'homebrew-failure' ? tag.slice(1) : '0.0.1')
-    finish({ sha: 'e'.repeat(40), encoding: 'base64',
-      content: Buffer.from(`class SqlNotSoLite < Formula\n  version "${version}"\nend\n`).toString('base64') })
-  }
 } else if (endpoint?.startsWith(`${repo}/actions/workflows/42/runs?`)) {
   state.runLists = (state.runLists ?? 0) + 1
   if (state.previousRerunBeforePush && state.runLists > 1 && !remoteTag()) state.previousRuns[0].run_attempt = 2
@@ -191,11 +180,19 @@ if (endpoint === repo) {
 } else if (previousRun) {
   if (previousRun.jobsFailure) finish(null, 503)
   else finish({ jobs: [
-    { id: 4, name: 'Publish release and multiarch image', status: 'completed',
-      conclusion: previousRun.publicationStarted ? 'failure' : 'skipped' },
     ...(!previousRun.missingJobs ? [
+      { id: 4, name: 'Publish release and multiarch image', status: 'completed',
+        conclusion: previousRun.publicationStarted ? 'failure' : 'skipped' },
+    ] : []),
+    ...(!previousRun.withoutHomebrewJob ? [
       { id: 5, name: 'Update Homebrew tap', status: 'completed',
         conclusion: previousRun.homebrewPublished ? 'success' : 'skipped' },
+    ] : []),
+    ...(previousRun.duplicatePublicationJob ? [
+      { id: 6, name: 'Publish release and multiarch image', status: 'completed', conclusion: 'skipped' },
+    ] : []),
+    ...(previousRun.duplicateHomebrewJob ? [
+      { id: 7, name: 'Update Homebrew tap', status: 'completed', conclusion: 'skipped' },
     ] : []),
   ] })
 } else if (endpoint === `${repo}/actions/runs/${runId}`) {
@@ -221,10 +218,16 @@ if (endpoint === repo) {
     const publication = state.published || state.publicationStarted
     finish({ jobs: [
       { id: 1, name: 'checks / CI result', status: 'completed', conclusion: state.cancelled ? 'cancelled' : 'failure' },
-      { id: 2, name: 'Publish release and multiarch image', status: 'completed',
-        conclusion: publication ? (state.scenario === 'homebrew-failure' ? 'success' : 'failure') : 'skipped' },
-      ...(!state.missingJobs ? [{ id: 3, name: 'Update Homebrew tap', status: 'completed',
-        conclusion: publication && state.scenario === 'homebrew-failure' ? 'failure' : 'skipped' }] : []),
+      ...(!state.missingJobs ? [
+        { id: 2, name: 'Publish release and multiarch image', status: 'completed',
+          conclusion: publication ? (['success', 'homebrew-failure'].includes(state.scenario) ? 'success' : 'failure') : 'skipped' },
+      ] : []),
+      ...(state.scenario === 'homebrew-failure' ? [
+        { id: 3, name: 'Update Homebrew tap', status: 'completed', conclusion: 'failure' },
+      ] : []),
+      ...(state.duplicatePublicationJob ? [
+        { id: 4, name: 'Publish release and multiarch image', status: 'completed', conclusion: 'skipped' },
+      ] : []),
     ] })
   }
 } else {

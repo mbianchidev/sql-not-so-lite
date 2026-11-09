@@ -1,7 +1,3 @@
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
-import { dirname, resolve } from 'node:path'
-import { pathToFileURL } from 'node:url'
-
 export function parseChecksums(text) {
   const checksums = new Map()
   for (const line of text.trim().split(/\r?\n/)) {
@@ -69,15 +65,4 @@ ${download('linux', 'amd64')}
   end
 end
 `
-}
-
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
-  const [tag, checksumsPath, outputPath] = process.argv.slice(2)
-  if (!tag || !checksumsPath || !outputPath || process.argv.length !== 5) {
-    throw new Error('Usage: node scripts/homebrew.mjs VERSION CHECKSUMS OUTPUT')
-  }
-  const formula = generateFormula(tag, readFileSync(checksumsPath, 'utf8'))
-  mkdirSync(dirname(outputPath), { recursive: true })
-  writeFileSync(outputPath, formula)
-  console.log(`Generated Homebrew formula for ${tag}: ${outputPath}`)
 }

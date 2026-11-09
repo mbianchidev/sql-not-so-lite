@@ -26,16 +26,6 @@ jobs:
           RELEASE_REF: ${{ github.ref }}
         run: bash scripts/verify-release-tag.sh
 
-      - name: Require tap publication credentials for stable releases
-        if: ${{ !contains(github.ref_name, '-') }}
-        env:
-          TAP_KEY_CONFIGURED: ${{ secrets.HOMEBREW_TAP_SSH_KEY != '' }}
-        run: |
-          if [ "$TAP_KEY_CONFIGURED" != true ]; then
-            echo "::error::Set HOMEBREW_TAP_SSH_KEY to the Homebrew tap's write-scoped deploy key."
-            exit 1
-          fi
-
   checks:
     needs: preflight
     uses: ./.github/workflows/ci.yml
@@ -62,16 +52,6 @@ jobs:
         env:
           RELEASE_REF: ${{ github.ref }}
         run: bash scripts/verify-release-tag.sh
-
-      - name: Require tap publication credentials for stable releases
-        if: ${{ !contains(github.ref_name, '-') }}
-        env:
-          TAP_KEY: ${{ secrets.HOMEBREW_TAP_SSH_KEY }}
-        run: |
-          if [ -z "$TAP_KEY" ]; then
-            echo "::error::Set HOMEBREW_TAP_SSH_KEY to the Homebrew tap's write-scoped deploy key."
-            exit 1
-          fi
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
@@ -100,51 +80,3 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SQNSL_GUI_ARTIFACT_DIR: ${{ runner.temp }}/sqnsl-gui-${{ github.sha }}
-
-  homebrew:
-    name: Update Homebrew tap
-    needs: publish
-    if: ${{ !contains(github.ref_name, '-') }}
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          persist-credentials: false
-
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v6
-        with:
-          node-version-file: .node-version
-
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          repository: mbianchidev/homebrew-tap
-          ref: main
-          path: homebrew-tap
-          ssh-key: ${{ secrets.HOMEBREW_TAP_SSH_KEY }}
-
-      - name: Generate formula from published release checksums
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RELEASE_TAG: ${{ github.ref_name }}
-        run: |
-          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
-            --pattern checksums.txt --dir "$RUNNER_TEMP/release"
-          node scripts/homebrew.mjs "$RELEASE_TAG" \
-            "$RUNNER_TEMP/release/checksums.txt" homebrew-tap/Formula/sql-not-so-lite.rb
-          ruby -c homebrew-tap/Formula/sql-not-so-lite.rb
-
-      - name: Commit and push formula
-        working-directory: homebrew-tap
-        env:
-          RELEASE_TAG: ${{ github.ref_name }}
-          RELEASE_OWNER: ${{ github.repository_owner }}
-        run: |
-          git config user.name "$RELEASE_OWNER"
-          git config user.email "$RELEASE_OWNER@users.noreply.github.com"
-          git add Formula/sql-not-so-lite.rb
-          if git diff --cached --quiet; then
-            echo "Tap already contains $RELEASE_TAG."
-          else
-            git commit --no-gpg-sign -m "Update sql-not-so-lite to $RELEASE_TAG"
-            git push origin HEAD:main
-          fi

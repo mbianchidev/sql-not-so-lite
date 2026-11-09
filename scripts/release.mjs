@@ -10,7 +10,6 @@ import { promisify } from 'node:util'
 
 const exec = promisify(execFile)
 const repository = 'mbianchidev/sql-not-so-lite'
-const tap = 'mbianchidev/homebrew-tap'
 const repoAPI = `repos/${repository}`
 const stableVersion = /^v?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/
 const hash = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/
@@ -171,16 +170,11 @@ class Release {
     return this.command('git', args)
   }
 
-  async api(path, { pages = false, missing = false, method = 'GET' } = {}) {
-    try {
-      const output = await this.command('gh', ['api', '--hostname', 'github.com', '--method', method,
-        path, ...(pages ? ['--paginate', '--slurp'] : [])])
-      if (!output && method === 'GET') throw new Error(`GitHub returned an empty response: ${path}`)
-      return output ? JSON.parse(output) : null
-    } catch (error) {
-      if (missing && error.status === 404) return null
-      throw error
-    }
+  async api(path, { pages = false, method = 'GET' } = {}) {
+    const output = await this.command('gh', ['api', '--hostname', 'github.com', '--method', method,
+      path, ...(pages ? ['--paginate', '--slurp'] : [])])
+    if (!output && method === 'GET') throw new Error(`GitHub returned an empty response: ${path}`)
+    return output ? JSON.parse(output) : null
   }
 
   async items(path, key) {
@@ -259,23 +253,7 @@ class Release {
     for (const image of images) {
       if (!Array.isArray(image.metadata?.container?.tags)) throw new Error('Invalid GHCR tag inventory')
     }
-    const head = (await this.api(`repos/${tap}/git/ref/heads/main`)).object?.sha
-    if (!hash.test(head)) throw new Error('Cannot identify the Homebrew tap main revision')
-    const formula = await this.api(
-      `repos/${tap}/contents/Formula/sql-not-so-lite.rb?ref=${head}`, { missing: true },
-    )
-    let formulaVersion = null
-    if (formula) {
-      if (formula.encoding !== 'base64' || typeof formula.content !== 'string' || !hash.test(formula.sha)) {
-        throw new Error('Unexpected Homebrew formula content or identity')
-      }
-      const text = Buffer.from(formula.content, 'base64').toString('utf8')
-      formulaVersion = /^\s*version "([^"]+)"$/m.exec(text)?.[1]
-      if (!formulaVersion) throw new Error('Cannot identify the current Homebrew formula version')
-      normalizeVersion(formulaVersion)
-    }
-    return { release, versions: releases.map(release => release.tag_name), images,
-      tap: { head, blob: formula?.sha ?? null, version: formulaVersion } }
+    return { release, versions: releases.map(release => release.tag_name), images }
   }
 
   hasImage(snapshot, includePartial = true) {
@@ -291,7 +269,6 @@ class Release {
     for (const image of snapshot.images) {
       for (const tag of image.metadata.container.tags) this.requireNewer(tag, 'GHCR')
     }
-    this.requireNewer(snapshot.tap.version, 'Homebrew')
   }
 
   async runs() {
@@ -329,11 +306,13 @@ class Release {
 
   async publicationJobs(runId) {
     const jobs = await this.items(`${repoAPI}/actions/runs/${runId}/attempts/1/jobs?per_page=100`, 'jobs')
+    // Historical runs can still contain the retired tap writer.
     const names = ['Publish release and multiarch image', 'Update Homebrew tap']
     const publication = jobs.filter(job => names.includes(job.name))
       .map(({ id, name, status, conclusion }) => ({ id, name, status, conclusion }))
-    if (publication.length !== 2 || !names.every(name => publication.filter(job => job.name === name).length === 1)) {
-      throw new Error(`Cannot prove both publication jobs were skipped for Release run ${runId}. ` +
+    if (publication.filter(job => job.name === names[0]).length !== 1 ||
+      publication.filter(job => job.name === names[1]).length > 1) {
+      throw new Error(`Cannot identify publication jobs for Release run ${runId}. ` +
         'Tags and release resources preserved.')
     }
     return publication
@@ -522,9 +501,8 @@ class Release {
         ['amd64', 'arm64'].flatMap(arch => (os === 'linux' ? ['tar.gz', 'deb', 'rpm'] : ['tar.gz'])
           .map(ext => `sql-not-so-lite_${this.version}_${os}_${arch}.${ext}`)))]
       if (release?.tag_name === this.tag && !release.draft && !release.prerelease &&
-        expected.every(name => names.has(name)) && this.hasImage(this.state.after, false) &&
-        this.state.after.tap.version && compareVersions(this.state.after.tap.version, this.tag) >= 0) break
-      console.log('Waiting for published GitHub assets, GHCR metadata, and the Homebrew formula...')
+        expected.every(name => names.has(name)) && this.hasImage(this.state.after, false)) break
+      console.log('Waiting for published GitHub assets and GHCR metadata...')
       await this.pause(this.deadline)
     }
     const finalRun = await this.trackedRun()
@@ -589,10 +567,10 @@ class Release {
       this.state.after = await this.snapshot()
       this.save()
       if (this.state.publicationJobs.some(job => job.status !== 'completed' || job.conclusion !== 'skipped')) {
-        throw new Error('Publication started or may have started. GitHub assets, GHCR version/latest images, ' +
-          'and the Homebrew formula require coordinated recovery, not automatic deletion.')
+        throw new Error('Publication started or may have started. GitHub assets and GHCR version/latest images ' +
+          'require coordinated recovery, not automatic deletion.')
       }
-      if (this.state.after.release || this.hasImage(this.state.after) || this.state.after.tap.version === this.version) {
+      if (this.state.after.release || this.hasImage(this.state.after)) {
         throw new Error('Release resources appeared despite skipped publication; ownership is uncertain. Nothing will be deleted.')
       }
       if ((await this.trackedRun()).status !== 'completed') {
