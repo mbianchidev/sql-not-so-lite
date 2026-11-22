@@ -1,3 +1,5 @@
+<img src="docs/assets/logo.svg" width="96" height="96" alt="sql-not-so-lite logo">
+
 # sql-not-so-lite
 
 A SQLite workspace with searchable navigation, schema editing, and local SQL tools.

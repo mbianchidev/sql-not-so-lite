@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="sql-not-so-lite">
+  <rect x="2" y="2" width="60" height="60" rx="14" fill="#151719"/>
+  <rect x="7" y="29.5" width="50" height="5" rx="2.5" fill="#EFF2F4"/>
+  <g fill="#A6D5BC">
+    <path d="M10 19V45A7 3 0 0 0 24 45V19Z"/>
+    <path d="M40 19V45A7 3 0 0 0 54 45V19Z"/>
+  </g>
+  <path d="M10 27.5A7 3 0 0 0 24 27.5M10 36.5A7 3 0 0 0 24 36.5M40 27.5A7 3 0 0 0 54 27.5M40 36.5A7 3 0 0 0 54 36.5" fill="none" stroke="#151719" stroke-width="2"/>
+  <g fill="#BEE6CF" stroke="#151719" stroke-width="1.5">
+    <ellipse cx="17" cy="19" rx="7" ry="3"/>
+    <ellipse cx="47" cy="19" rx="7" ry="3"/>
+  </g>
+</svg>
